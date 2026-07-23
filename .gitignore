@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+.zip_extract_luctiv_*/
+outputs/
+downloads/
+*.xls
+*.xlsm
+*.xlsx
+*.xlsb
+~$*.xls*
+!assets/plantilla_datos_terminados.xlsx
