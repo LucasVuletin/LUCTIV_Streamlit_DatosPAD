@@ -13,7 +13,7 @@ SUPPORTED_SUFFIXES = {".xlsm", ".xlsx"}
 
 st.set_page_config(
     page_title="LUCTIV",
-    page_icon="⚙️",
+    page_icon="L",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -22,59 +22,100 @@ st.markdown(
     """
     <style>
     :root {
-        --luctiv-ink: #13202B;
-        --luctiv-blue: #1677A3;
-        --luctiv-cyan: #55BED2;
-        --luctiv-soft: #EFF8FA;
-        --luctiv-border: #D8E6EA;
+        --luctiv-ink: #121820;
+        --luctiv-muted: #52616B;
+        --luctiv-red: #D71920;
+        --luctiv-teal: #0F8B8D;
+        --luctiv-gold: #F4B942;
+        --luctiv-soft: #F5F8FA;
+        --luctiv-border: #D9E2E7;
     }
-    .stApp { background: linear-gradient(180deg, #F7FBFC 0%, #FFFFFF 36%); }
-    .block-container { max-width: 920px; padding-top: 2.4rem; padding-bottom: 3rem; }
+    .stApp {
+        background:
+            radial-gradient(circle at 8% 0%, rgba(215, 25, 32, 0.10), transparent 28rem),
+            radial-gradient(circle at 95% 8%, rgba(15, 139, 141, 0.10), transparent 26rem),
+            linear-gradient(180deg, #F7F9FA 0%, #FFFFFF 46%);
+    }
+    .block-container { max-width: 960px; padding-top: 2rem; padding-bottom: 3rem; }
     .luctiv-hero {
         border: 1px solid var(--luctiv-border);
-        border-radius: 22px;
-        padding: 2rem 2.1rem;
-        background: rgba(255,255,255,0.94);
-        box-shadow: 0 18px 48px rgba(21, 66, 83, 0.08);
-        margin-bottom: 1.4rem;
+        border-left: 6px solid var(--luctiv-red);
+        border-radius: 8px;
+        padding: clamp(1.45rem, 4vw, 2.35rem);
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 20px 50px rgba(18, 24, 32, 0.08);
+        margin-bottom: 1.25rem;
+        overflow: hidden;
     }
-    .luctiv-kicker {
-        color: var(--luctiv-blue);
-        font-size: 0.82rem;
-        letter-spacing: 0.18em;
-        font-weight: 800;
-        margin-bottom: 0.35rem;
+    .luctiv-brand-row {
+        align-items: center;
+        display: flex;
+        gap: 0.8rem;
+        margin-bottom: 0.9rem;
+    }
+    .luctiv-mark {
+        align-items: center;
+        background: linear-gradient(135deg, var(--luctiv-red) 0 52%, var(--luctiv-teal) 52% 100%);
+        border-radius: 8px;
+        box-shadow: 0 10px 24px rgba(215, 25, 32, 0.18);
+        color: white;
+        display: flex;
+        font-size: 1.18rem;
+        font-weight: 900;
+        height: 44px;
+        justify-content: center;
+        line-height: 1;
+        width: 44px;
     }
     .luctiv-title {
         color: var(--luctiv-ink);
-        font-size: clamp(2.6rem, 7vw, 4.6rem);
-        letter-spacing: -0.06em;
+        font-size: clamp(2.7rem, 8vw, 5.1rem);
+        letter-spacing: 0;
         line-height: 0.95;
-        font-weight: 850;
+        font-weight: 900;
         margin: 0;
     }
     .luctiv-subtitle {
-        color: #526672;
-        max-width: 680px;
-        font-size: 1.04rem;
-        margin: 1rem 0 0 0;
-        line-height: 1.6;
+        color: var(--luctiv-muted);
+        max-width: 760px;
+        font-size: 1.08rem;
+        margin: 0;
+        line-height: 1.62;
+    }
+    .luctiv-rule {
+        background: linear-gradient(90deg, var(--luctiv-red), var(--luctiv-gold), var(--luctiv-teal));
+        border-radius: 999px;
+        height: 4px;
+        margin-top: 1.15rem;
+        width: 132px;
     }
     div[data-testid="stFileUploader"] {
-        border: 1px dashed #8BC8D5;
-        border-radius: 18px;
-        padding: 0.45rem 0.75rem 0.15rem;
-        background: var(--luctiv-soft);
+        border: 1px dashed #9CB7C3;
+        border-radius: 8px;
+        padding: 0.65rem 0.85rem 0.25rem;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 12px 32px rgba(18, 24, 32, 0.05);
+    }
+    div[data-testid="stMetric"] {
+        background: #FFFFFF;
+        border: 1px solid var(--luctiv-border);
+        border-radius: 8px;
+        padding: 0.72rem 0.8rem;
     }
     div.stButton > button, div.stDownloadButton > button {
-        border-radius: 12px;
+        border-radius: 8px;
         min-height: 3rem;
         font-weight: 750;
         border: none;
     }
     div.stButton > button[kind="primary"], div.stDownloadButton > button {
-        background: linear-gradient(135deg, var(--luctiv-blue), var(--luctiv-cyan));
+        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-teal));
         color: white;
+    }
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--luctiv-border);
+        border-radius: 8px;
+        box-shadow: 0 10px 26px rgba(18, 24, 32, 0.04);
     }
     .luctiv-note {
         color: #617581;
@@ -91,12 +132,14 @@ st.markdown(
 st.markdown(
     """
     <section class="luctiv-hero">
-        <div class="luctiv-kicker">EXCEL PROCESSOR</div>
-        <h1 class="luctiv-title">LUCTIV</h1>
+        <div class="luctiv-brand-row">
+            <div class="luctiv-mark">L</div>
+            <h1 class="luctiv-title">LUCTIV</h1>
+        </div>
         <p class="luctiv-subtitle">
-            Cargá el archivo original del pozo, procesalo y descargá el Excel terminado
-            con Datos Fractura, Survey, Smart Staging y Wellbore IFS.
+            Hola inge! Carg&aacute; el archivo del pozo, procesalo y descarg&aacute; el archivo excel terminado con los datos para hacer Smart Staging y IFS. Enjoy it.
         </p>
+        <div class="luctiv-rule"></div>
     </section>
     """,
     unsafe_allow_html=True,
