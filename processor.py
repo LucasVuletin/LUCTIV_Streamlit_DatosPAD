@@ -18,6 +18,8 @@ REQUIRED_SHEETS = ("Input", "Survey", "Punzados")
 TEMPLATE_SHEET = "Datos terminados"
 ALLOWED_EXTENSIONS = {".xlsm", ".xlsx"}
 FORMULA_ERROR_VALUES = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A"}
+GENERAL_NUMBER_FORMAT = "General"
+INTEGER_NUMBER_FORMAT = "0"
 
 
 class LuctivError(Exception):
@@ -661,6 +663,52 @@ def _ensure_styles(sheet: Worksheet, result: ProcessingResult) -> None:
         _copy_row_style(sheet, source_row, row_idx, 18, 20)
 
 
+def _set_number_format(
+    sheet: Worksheet,
+    min_row: int,
+    max_row: int,
+    columns: Iterable[int],
+    number_format: str,
+) -> None:
+    if max_row < min_row:
+        return
+    for row_idx in range(min_row, max_row + 1):
+        for col_idx in columns:
+            sheet.cell(row_idx, col_idx).number_format = number_format
+
+
+def _normalize_output_number_formats(sheet: Worksheet, result: ProcessingResult) -> None:
+    _set_number_format(
+        sheet,
+        3,
+        2 + len(result.fracture_configs),
+        range(2, 6),
+        INTEGER_NUMBER_FORMAT,
+    )
+    _set_number_format(
+        sheet,
+        4,
+        3 + len(result.survey),
+        range(8, 12),
+        GENERAL_NUMBER_FORMAT,
+    )
+    _set_number_format(sheet, 4, 3 + len(result.stages), (13,), INTEGER_NUMBER_FORMAT)
+    _set_number_format(
+        sheet,
+        4,
+        3 + len(result.stages),
+        range(14, 17),
+        GENERAL_NUMBER_FORMAT,
+    )
+    _set_number_format(
+        sheet,
+        4,
+        3 + result.wellbore_row_count,
+        range(19, 21),
+        GENERAL_NUMBER_FORMAT,
+    )
+
+
 def generate_finished_workbook(
     result: ProcessingResult,
     template_path: str | Path,
@@ -719,6 +767,8 @@ def generate_finished_workbook(
             sheet.cell(wellbore_row, 19, stage.top_md)
             sheet.cell(wellbore_row, 20, stage.base_md)
             wellbore_row += 1
+
+    _normalize_output_number_formats(sheet, result)
 
     # Ensure Excel recalculates any formulas that could exist in the template.
     try:

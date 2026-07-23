@@ -290,6 +290,36 @@ def test_generated_xlsx_integrity_and_formula_error_scan():
     assert "Archivo .xlsx verificado con openpyxl" in generated.result.checks
 
 
+def test_generated_numeric_cells_do_not_keep_template_decimal_format():
+    data = make_source_workbook(stage_count=3, survey_rows=5)
+    generated = process_uploaded_workbook(data, "pozo.xlsm", TEMPLATE)
+    workbook = load_workbook(BytesIO(generated.data), data_only=False)
+    sheet = workbook["Datos terminados"]
+
+    plain_numeric_cells = [
+        "H4",
+        "I4",
+        "J4",
+        "K4",
+        "N4",
+        "O4",
+        "P4",
+        "S4",
+        "T4",
+    ]
+    integer_cells = ["B3", "C3", "D3", "E3", "M4"]
+
+    for coordinate in plain_numeric_cells:
+        cell = sheet[coordinate]
+        assert isinstance(cell.value, (int, float))
+        assert cell.number_format == "General"
+
+    for coordinate in integer_cells:
+        cell = sheet[coordinate]
+        assert isinstance(cell.value, int)
+        assert cell.number_format == "0"
+
+
 def test_duplicate_cluster_numbers_are_rejected():
     data = make_source_workbook(duplicate_cluster_number=True)
 
