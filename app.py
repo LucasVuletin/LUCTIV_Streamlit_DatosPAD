@@ -25,16 +25,16 @@ st.markdown(
         --luctiv-ink: #121820;
         --luctiv-muted: #52616B;
         --luctiv-red: #D71920;
-        --luctiv-teal: #0F8B8D;
-        --luctiv-gold: #F4B942;
+        --luctiv-red-dark: #9F1016;
+        --luctiv-charcoal: #1B1B1B;
+        --luctiv-gray: #E7E9EC;
         --luctiv-soft: #F5F8FA;
         --luctiv-border: #D9E2E7;
     }
     .stApp {
         background:
-            radial-gradient(circle at 8% 0%, rgba(215, 25, 32, 0.10), transparent 28rem),
-            radial-gradient(circle at 95% 8%, rgba(15, 139, 141, 0.10), transparent 26rem),
-            linear-gradient(180deg, #F7F9FA 0%, #FFFFFF 46%);
+            radial-gradient(circle at 8% 0%, rgba(215, 25, 32, 0.13), transparent 27rem),
+            linear-gradient(180deg, #F7F7F8 0%, #FFFFFF 46%);
     }
     .block-container { max-width: 960px; padding-top: 2rem; padding-bottom: 3rem; }
     .luctiv-hero {
@@ -43,7 +43,7 @@ st.markdown(
         border-radius: 8px;
         padding: clamp(1.45rem, 4vw, 2.35rem);
         background: rgba(255, 255, 255, 0.96);
-        box-shadow: 0 20px 50px rgba(18, 24, 32, 0.08);
+        box-shadow: 0 20px 50px rgba(27, 27, 27, 0.08);
         margin-bottom: 1.25rem;
         overflow: hidden;
     }
@@ -55,17 +55,17 @@ st.markdown(
     }
     .luctiv-mark {
         align-items: center;
-        background: linear-gradient(135deg, var(--luctiv-red) 0 52%, var(--luctiv-teal) 52% 100%);
+        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-red-dark));
         border-radius: 8px;
-        box-shadow: 0 10px 24px rgba(215, 25, 32, 0.18);
+        box-shadow: 0 12px 28px rgba(215, 25, 32, 0.24);
         color: white;
         display: flex;
-        font-size: 1.18rem;
+        font-size: 2rem;
         font-weight: 900;
-        height: 44px;
+        height: 64px;
         justify-content: center;
         line-height: 1;
-        width: 44px;
+        width: 64px;
     }
     .luctiv-title {
         color: var(--luctiv-ink);
@@ -83,14 +83,14 @@ st.markdown(
         line-height: 1.62;
     }
     .luctiv-rule {
-        background: linear-gradient(90deg, var(--luctiv-red), var(--luctiv-gold), var(--luctiv-teal));
+        background: linear-gradient(90deg, var(--luctiv-red), var(--luctiv-red-dark), var(--luctiv-charcoal));
         border-radius: 999px;
         height: 4px;
         margin-top: 1.15rem;
-        width: 132px;
+        width: 156px;
     }
     div[data-testid="stFileUploader"] {
-        border: 1px dashed #9CB7C3;
+        border: 1px dashed rgba(215, 25, 32, 0.45);
         border-radius: 8px;
         padding: 0.65rem 0.85rem 0.25rem;
         background: rgba(255, 255, 255, 0.92);
@@ -98,7 +98,7 @@ st.markdown(
     }
     div[data-testid="stMetric"] {
         background: #FFFFFF;
-        border: 1px solid var(--luctiv-border);
+        border: 1px solid var(--luctiv-gray);
         border-radius: 8px;
         padding: 0.72rem 0.8rem;
     }
@@ -109,7 +109,7 @@ st.markdown(
         border: none;
     }
     div.stButton > button[kind="primary"], div.stDownloadButton > button {
-        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-teal));
+        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-red-dark));
         color: white;
     }
     div[data-testid="stExpander"] {
