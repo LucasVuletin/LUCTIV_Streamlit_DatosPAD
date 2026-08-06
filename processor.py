@@ -91,6 +91,12 @@ class ProcessingResult:
 class GeneratedWorkbook:
     result: ProcessingResult
     data: bytes
+    survey_txt_data: bytes
+
+    @property
+    def survey_txt_filename(self) -> str:
+        stem = self.result.output_filename.removesuffix("_datos_terminados.xlsx")
+        return f"{stem}_survey_md_inclination_azimuth.txt"
 
 
 def _normalize_text(value: object) -> str:
@@ -196,6 +202,40 @@ def _safe_output_filename(well_name: str) -> str:
     cleaned = re.sub(r"[()]", "", cleaned)
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", cleaned).strip("-_.")
     return f"{cleaned or 'pozo'}_datos_terminados.xlsx"
+
+
+def _format_plain_number(value: float | int) -> str:
+    number = float(value)
+    if math.isclose(number, round(number), abs_tol=0.000000001):
+        return str(int(round(number)))
+    return f"{number:.10f}".rstrip("0").rstrip(".")
+
+
+def _survey_txt_data(result: ProcessingResult) -> bytes:
+    lines = ["MD\tINCLINATION\tAZIMUTH"]
+    for point in result.survey:
+        lines.append(
+            "\t".join(
+                (
+                    _format_plain_number(point.md),
+                    _format_plain_number(point.inclination),
+                    _format_plain_number(point.azimuth),
+                )
+            )
+        )
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def _smart_staging_stages(result: ProcessingResult) -> list[StageInterval]:
+    return sorted(result.stages, key=lambda stage: stage.stage)
+
+
+def _wellbore_ifs_stages(result: ProcessingResult) -> list[StageInterval]:
+    return sorted(
+        result.stages,
+        key=lambda stage: (stage.top_md, stage.base_md, stage.stage),
+        reverse=True,
+    )
 
 
 def _extract_fracture_configs(sheet: Worksheet) -> list[FractureConfig]:
@@ -557,7 +597,7 @@ def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str
             "El archivo generado contiene errores visibles de Excel: " + ", ".join(errors[:20])
         )
 
-    for row_idx, stage in enumerate(result.stages, start=4):
+    for row_idx, stage in enumerate(_smart_staging_stages(result), start=4):
         plug = sheet.cell(row_idx, 16).value
         fondo = sheet.cell(row_idx, 15).value
         if not isinstance(plug, (int, float)) or not isinstance(fondo, (int, float)):
@@ -568,7 +608,7 @@ def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str
             )
 
     expected_wellbore: list[tuple[str, float, float]] = []
-    for stage in reversed(result.stages):
+    for stage in _wellbore_ifs_stages(result):
         expected_wellbore.append(("Treatment Interval", stage.top_md, stage.base_md))
         expected_wellbore.append(("Perforations", stage.top_md, stage.base_md))
 
@@ -599,6 +639,8 @@ def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str
                     )
 
     return [
+        "Smart Staging ordenado por ETAPA de menor a mayor",
+        "Wellbore IFS ordenado por MD de mayor a menor",
         "Wellbore IFS verificado con dos filas por etapa",
         "Archivo .xlsx verificado con openpyxl",
         "Sin datos residuales en los rangos variables",
@@ -754,14 +796,14 @@ def generate_finished_workbook(
         sheet.cell(row_idx, 10, point.azimuth)
         sheet.cell(row_idx, 11, point.tvd)
 
-    for row_idx, stage in enumerate(result.stages, start=4):
+    for row_idx, stage in enumerate(_smart_staging_stages(result), start=4):
         sheet.cell(row_idx, 13, stage.stage)
         sheet.cell(row_idx, 14, stage.top_md)
         sheet.cell(row_idx, 15, stage.base_md)
         sheet.cell(row_idx, 16, stage.plug_md)
 
     wellbore_row = 4
-    for stage in reversed(result.stages):
+    for stage in _wellbore_ifs_stages(result):
         for label in ("Treatment Interval", "Perforations"):
             sheet.cell(wellbore_row, 18, label)
             sheet.cell(wellbore_row, 19, stage.top_md)
@@ -784,7 +826,10 @@ def generate_finished_workbook(
     for check in _check_generated_workbook(data, result):
         if check not in result.checks:
             result.checks.append(check)
-    return GeneratedWorkbook(result=result, data=data)
+    txt_check = "Survey TXT generado con MD, INCLINATION y AZIMUTH"
+    if txt_check not in result.checks:
+        result.checks.append(txt_check)
+    return GeneratedWorkbook(result=result, data=data, survey_txt_data=_survey_txt_data(result))
 
 
 def process_uploaded_workbook(

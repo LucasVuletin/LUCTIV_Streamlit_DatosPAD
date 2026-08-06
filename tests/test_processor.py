@@ -59,6 +59,7 @@ def make_source_workbook(
     overrides: dict[tuple[int, int], str] | None = None,
     omit_sheets: set[str] | None = None,
     empty_punzados: bool = False,
+    stage_top_md: dict[int, float] | None = None,
 ) -> bytes:
     input_configs = _default_configs(stage_count) if configs is None else configs
     cluster_configs = input_configs or _default_configs(stage_count)
@@ -67,6 +68,7 @@ def make_source_workbook(
     spf_by_stage = spf_by_stage or {}
     overrides = overrides or {}
     omit_sheets = omit_sheets or set()
+    stage_top_md = stage_top_md or {}
 
     workbook = Workbook()
     input_sheet = workbook.active
@@ -121,7 +123,7 @@ def make_source_workbook(
             cluster_count = clusters_by_stage.get(stage, int(config["clusters"]))
             spf = spf_by_stage.get(stage, int(config["spf"]))
             for index in range(cluster_count):
-                top_md = 6000 + stage * 20 + index * 1.5
+                top_md = stage_top_md.get(stage, 6000 + stage * 20) + index * 1.5
                 base_md = top_md + 1.1
                 if bad_depth_stage == stage:
                     base_md = top_md - 0.5
@@ -268,6 +270,50 @@ def test_wellbore_has_two_rows_per_stage_in_reverse_order():
     ]
     assert sheet.cell(4, 19).value == result.stages[-1].top_md
     assert sheet.cell(8, 19).value == result.stages[0].top_md
+
+
+def test_smart_staging_is_sorted_by_stage_ascending():
+    data = make_source_workbook(
+        stage_count=3,
+        stage_top_md={1: 7000, 2: 6500, 3: 6800},
+    )
+    result = analyze_workbook(data, "pozo.xlsx")
+    generated = generate_finished_workbook(result, TEMPLATE)
+    sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
+
+    assert [sheet.cell(row, 13).value for row in range(4, 7)] == [1, 2, 3]
+    assert [sheet.cell(row, 14).value for row in range(4, 7)] == [7000, 6500, 6800]
+
+
+def test_wellbore_ifs_is_sorted_by_top_md_descending():
+    data = make_source_workbook(
+        stage_count=3,
+        stage_top_md={1: 7000, 2: 6500, 3: 6800},
+    )
+    result = analyze_workbook(data, "pozo.xlsx")
+    generated = generate_finished_workbook(result, TEMPLATE)
+    sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
+
+    top_values = [
+        sheet.cell(row, 19).value
+        for row in range(4, 4 + result.wellbore_row_count)
+    ]
+
+    assert top_values == [7000, 7000, 6800, 6800, 6500, 6500]
+
+
+def test_survey_txt_has_md_inclination_and_azimuth_columns():
+    data = make_source_workbook(stage_count=2, survey_rows=3)
+    generated = process_uploaded_workbook(data, "pozo.xlsm", TEMPLATE)
+    lines = generated.survey_txt_data.decode("utf-8").splitlines()
+
+    assert generated.survey_txt_filename == "LajE-32h_survey_md_inclination_azimuth.txt"
+    assert lines == [
+        "MD\tINCLINATION\tAZIMUTH",
+        "1000\t80\t120",
+        "1010\t80.1\t120.2",
+        "1020\t80.2\t120.4",
+    ]
 
 
 def test_output_filename_is_sanitized():

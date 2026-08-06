@@ -215,13 +215,23 @@ if process_clicked and uploaded_file is not None:
         else:
             st.write("✅ Sin sobreescrituras u observaciones detectadas")
 
-    st.download_button(
-        "Descargar Excel terminado",
-        data=generated.data,
-        file_name=result.output_filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    download_excel, download_survey = st.columns(2)
+    with download_excel:
+        st.download_button(
+            "Descargar Excel terminado",
+            data=generated.data,
+            file_name=result.output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with download_survey:
+        st.download_button(
+            "Descargar Survey TXT",
+            data=generated.survey_txt_data,
+            file_name=generated.survey_txt_filename,
+            mime="text/plain",
+            use_container_width=True,
+        )
 
 st.markdown(
     """
