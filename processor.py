@@ -92,11 +92,17 @@ class GeneratedWorkbook:
     result: ProcessingResult
     data: bytes
     survey_txt_data: bytes
+    survey_csv_data: bytes
 
     @property
     def survey_txt_filename(self) -> str:
         stem = self.result.output_filename.removesuffix("_datos_terminados.xlsx")
         return f"{stem}_survey_md_inclination_azimuth.txt"
+
+    @property
+    def survey_csv_filename(self) -> str:
+        stem = self.result.output_filename.removesuffix("_datos_terminados.xlsx")
+        return f"{stem}_survey_md_inclination_azimuth.csv"
 
 
 def _normalize_text(value: object) -> str:
@@ -211,11 +217,11 @@ def _format_plain_number(value: float | int) -> str:
     return f"{number:.10f}".rstrip("0").rstrip(".")
 
 
-def _survey_txt_data(result: ProcessingResult) -> bytes:
-    lines = ["MD\tINCLINATION\tAZIMUTH"]
+def _survey_delimited_data(result: ProcessingResult, delimiter: str) -> bytes:
+    lines = [delimiter.join(("MD", "INCLINATION", "AZIMUTH"))]
     for point in result.survey:
         lines.append(
-            "\t".join(
+            delimiter.join(
                 (
                     _format_plain_number(point.md),
                     _format_plain_number(point.inclination),
@@ -226,8 +232,16 @@ def _survey_txt_data(result: ProcessingResult) -> bytes:
     return ("\r\n".join(lines) + "\r\n").encode("utf-8")
 
 
+def _survey_txt_data(result: ProcessingResult) -> bytes:
+    return _survey_delimited_data(result, "\t")
+
+
+def _survey_csv_data(result: ProcessingResult) -> bytes:
+    return _survey_delimited_data(result, ",")
+
+
 def _smart_staging_stages(result: ProcessingResult) -> list[StageInterval]:
-    return sorted(result.stages, key=lambda stage: stage.stage)
+    return sorted(result.stages, key=lambda stage: stage.stage, reverse=True)
 
 
 def _wellbore_ifs_stages(result: ProcessingResult) -> list[StageInterval]:
@@ -639,7 +653,7 @@ def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str
                     )
 
     return [
-        "Smart Staging ordenado por ETAPA de menor a mayor",
+        "Smart Staging ordenado por ETAPA de mayor a menor",
         "Wellbore IFS ordenado por MD de mayor a menor",
         "Wellbore IFS verificado con dos filas por etapa",
         "Archivo .xlsx verificado con openpyxl",
@@ -826,10 +840,15 @@ def generate_finished_workbook(
     for check in _check_generated_workbook(data, result):
         if check not in result.checks:
             result.checks.append(check)
-    txt_check = "Survey TXT generado con MD, INCLINATION y AZIMUTH"
+    txt_check = "Survey TXT/CSV generado con MD, INCLINATION y AZIMUTH"
     if txt_check not in result.checks:
         result.checks.append(txt_check)
-    return GeneratedWorkbook(result=result, data=data, survey_txt_data=_survey_txt_data(result))
+    return GeneratedWorkbook(
+        result=result,
+        data=data,
+        survey_txt_data=_survey_txt_data(result),
+        survey_csv_data=_survey_csv_data(result),
+    )
 
 
 def process_uploaded_workbook(

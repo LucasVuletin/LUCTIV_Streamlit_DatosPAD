@@ -225,8 +225,8 @@ def test_dynamic_stage_counts_generate_valid_output(stage_count):
     sheet = output_workbook["Datos terminados"]
 
     assert len(result.stages) == stage_count
-    assert sheet.cell(4, 13).value == 1
-    assert sheet.cell(3 + stage_count, 13).value == stage_count
+    assert sheet.cell(4, 13).value == stage_count
+    assert sheet.cell(3 + stage_count, 13).value == 1
     assert sheet.cell(4, 18).value == "Treatment Interval"
     assert generated.data[:2] == b"PK"
 
@@ -272,7 +272,7 @@ def test_wellbore_has_two_rows_per_stage_in_reverse_order():
     assert sheet.cell(8, 19).value == result.stages[0].top_md
 
 
-def test_smart_staging_is_sorted_by_stage_ascending():
+def test_smart_staging_is_sorted_by_stage_descending():
     data = make_source_workbook(
         stage_count=3,
         stage_top_md={1: 7000, 2: 6500, 3: 6800},
@@ -281,8 +281,8 @@ def test_smart_staging_is_sorted_by_stage_ascending():
     generated = generate_finished_workbook(result, TEMPLATE)
     sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
 
-    assert [sheet.cell(row, 13).value for row in range(4, 7)] == [1, 2, 3]
-    assert [sheet.cell(row, 14).value for row in range(4, 7)] == [7000, 6500, 6800]
+    assert [sheet.cell(row, 13).value for row in range(4, 7)] == [3, 2, 1]
+    assert [sheet.cell(row, 14).value for row in range(4, 7)] == [6800, 6500, 7000]
 
 
 def test_wellbore_ifs_is_sorted_by_top_md_descending():
@@ -302,17 +302,25 @@ def test_wellbore_ifs_is_sorted_by_top_md_descending():
     assert top_values == [7000, 7000, 6800, 6800, 6500, 6500]
 
 
-def test_survey_txt_has_md_inclination_and_azimuth_columns():
+def test_survey_txt_and_csv_have_md_inclination_and_azimuth_columns():
     data = make_source_workbook(stage_count=2, survey_rows=3)
     generated = process_uploaded_workbook(data, "pozo.xlsm", TEMPLATE)
-    lines = generated.survey_txt_data.decode("utf-8").splitlines()
+    txt_lines = generated.survey_txt_data.decode("utf-8").splitlines()
+    csv_lines = generated.survey_csv_data.decode("utf-8").splitlines()
 
     assert generated.survey_txt_filename == "LajE-32h_survey_md_inclination_azimuth.txt"
-    assert lines == [
+    assert generated.survey_csv_filename == "LajE-32h_survey_md_inclination_azimuth.csv"
+    assert txt_lines == [
         "MD\tINCLINATION\tAZIMUTH",
         "1000\t80\t120",
         "1010\t80.1\t120.2",
         "1020\t80.2\t120.4",
+    ]
+    assert csv_lines == [
+        "MD,INCLINATION,AZIMUTH",
+        "1000,80,120",
+        "1010,80.1,120.2",
+        "1020,80.2,120.4",
     ]
 
 
