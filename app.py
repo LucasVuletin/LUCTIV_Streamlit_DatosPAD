@@ -129,7 +129,7 @@ st.markdown(
     .luctiv-result-heading h1 {
         color: var(--luctiv-ink);
         font-size: 1.75rem;
-        line-height: 1;
+        line-height: 1.15;
         letter-spacing: -0.03em;
         margin: 0;
     }
@@ -420,8 +420,17 @@ if has_cached_result:
     )
 
     cached_result = cached_generated.result
-    title_col, file_col, controls_col, download_col, txt_col, csv_col = st.columns(
-        [3.8, 0.8, 0.85, 1.15, 0.9, 0.9],
+    st.markdown(
+        f"""
+        <div class="luctiv-result-heading">
+            <h1>LUCTIV · {escape(cached_result.well_name)}</h1>
+            <p>Análisis completado · Excel terminado listo para revisar</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    file_col, controls_col, download_col, txt_col, csv_col = st.columns(
+        [1.1, 1.2, 1.7, 1.2, 1.2],
         gap="small",
         vertical_alignment="center",
     )
@@ -436,16 +445,6 @@ if has_cached_result:
         elapsed_seconds,
         manual_minutes,
     )
-    with title_col:
-        st.markdown(
-            f"""
-            <div class="luctiv-result-heading">
-                <h1>LUCTIV · {escape(cached_result.well_name)}</h1>
-                <p>Análisis completado · Excel terminado listo para revisar</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
     with controls_col:
         with st.popover("Controles"):
             st.markdown(
