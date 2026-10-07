@@ -162,6 +162,18 @@ def test_empty_survey_is_rejected():
         analyze_workbook(data, "pozo.xlsx")
 
 
+@pytest.mark.parametrize("base_header", ["Base Cluster MD (m)", "Fondo Cluster MD (m)"])
+def test_base_and_fondo_cluster_headers_are_detected(base_header: str):
+    workbook = load_workbook(BytesIO(make_source_workbook(stage_count=1, survey_rows=2)))
+    workbook["Punzados"]["C1"] = base_header
+
+    result = analyze_workbook(_xlsx_bytes(workbook), "pozo.xlsx")
+
+    assert len(result.clusters) == 10
+    assert result.clusters[0].base_md == 6021.1
+    assert len(result.stages) == 1
+
+
 def test_empty_punzados_is_rejected():
     data = make_source_workbook(empty_punzados=True)
 

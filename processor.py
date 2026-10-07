@@ -20,6 +20,7 @@ ALLOWED_EXTENSIONS = {".xlsm", ".xlsx"}
 FORMULA_ERROR_VALUES = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A"}
 GENERAL_NUMBER_FORMAT = "General"
 INTEGER_NUMBER_FORMAT = "0"
+CLUSTER_BASE_HEADER_ALIASES = ("Base Cluster MD", "Fondo Cluster MD")
 
 
 class LuctivError(Exception):
@@ -159,13 +160,21 @@ def _as_int(value: object, field_name: str, row_number: int) -> int:
 
 def _find_header_row(
     sheet: Worksheet,
-    required_terms: Iterable[str],
+    required_terms: Iterable[str | Iterable[str]],
     max_scan_rows: int = 60,
 ) -> int:
-    required = [_normalize_text(term) for term in required_terms]
+    required = [
+        tuple(_normalize_text(alias) for alias in term)
+        if not isinstance(term, str)
+        else (_normalize_text(term),)
+        for term in required_terms
+    ]
     for row_idx in range(1, min(sheet.max_row, max_scan_rows) + 1):
         values = [_normalize_text(cell.value) for cell in sheet[row_idx]]
-        if all(any(term == value or term in value for value in values) for term in required):
+        if all(
+            any(alias == value or alias in value for alias in aliases for value in values)
+            for aliases in required
+        ):
             return row_idx
     raise InvalidWorkbookError(
         f"No se pudo localizar el encabezado esperado en la hoja '{sheet.title}'."
@@ -337,7 +346,7 @@ def _extract_survey(sheet: Worksheet) -> list[SurveyPoint]:
 def _extract_clusters(sheet: Worksheet) -> list[Cluster]:
     header_row = _find_header_row(
         sheet,
-        ("# Cluster", "Tope Cluster MD", "Base Cluster MD", "Número etapa"),
+        ("# Cluster", "Tope Cluster MD", CLUSTER_BASE_HEADER_ALIASES, "Número etapa"),
         max_scan_rows=15,
     )
     headers = {
@@ -347,7 +356,7 @@ def _extract_clusters(sheet: Worksheet) -> list[Cluster]:
     }
     col_number = _find_column(headers, ("# Cluster", "Cluster"))
     col_top = _find_column(headers, ("Tope Cluster MD",))
-    col_base = _find_column(headers, ("Base Cluster MD",))
+    col_base = _find_column(headers, CLUSTER_BASE_HEADER_ALIASES)
     col_stage = _find_column(headers, ("Número etapa", "Numero etapa"))
     col_spf = _find_column(headers, ("N° de tiros x cluster", "tiros x cluster"))
     col_stage_length = _find_column_or_none(headers, ("Longitud de etapa",))
