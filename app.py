@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+from hashlib import sha256
+from html import escape
 from pathlib import Path
+from time import perf_counter
 
 import streamlit as st
 
-from processor import InvalidWorkbookError, LuctivError, process_uploaded_workbook
+from processor import (
+    GeneratedPackage,
+    InvalidWorkbookError,
+    LuctivError,
+    process_uploaded_package,
+)
+from well_visualization import build_well_figure, calculate_impact_metrics
 
 
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATE_PATH = APP_DIR / "assets" / "plantilla_datos_terminados.xlsx"
-SUPPORTED_SUFFIXES = {".xlsm", ".xlsx"}
+SUPPORTED_SUFFIXES = {".xlsm", ".xlsx", ".zip"}
 
 st.set_page_config(
     page_title="LUCTIV",
-    page_icon="L",
-    layout="centered",
+    page_icon="⚙️",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
@@ -22,100 +31,80 @@ st.markdown(
     """
     <style>
     :root {
-        --luctiv-ink: #121820;
-        --luctiv-muted: #52616B;
-        --luctiv-red: #D71920;
-        --luctiv-red-dark: #9F1016;
-        --luctiv-charcoal: #1B1B1B;
-        --luctiv-gray: #E7E9EC;
-        --luctiv-soft: #F5F8FA;
-        --luctiv-border: #D9E2E7;
+        --luctiv-ink: #13202B;
+        --luctiv-blue: #1677A3;
+        --luctiv-cyan: #55BED2;
+        --luctiv-soft: #EFF8FA;
+        --luctiv-border: #D8E6EA;
     }
-    .stApp {
-        background:
-            radial-gradient(circle at 8% 0%, rgba(215, 25, 32, 0.13), transparent 27rem),
-            linear-gradient(180deg, #F7F7F8 0%, #FFFFFF 46%);
-    }
-    .block-container { max-width: 960px; padding-top: 2rem; padding-bottom: 3rem; }
+    .stApp { background: linear-gradient(180deg, #F7FBFC 0%, #FFFFFF 36%); }
+    .block-container { max-width: 1180px; padding-top: 2.4rem; padding-bottom: 3rem; }
     .luctiv-hero {
         border: 1px solid var(--luctiv-border);
-        border-left: 6px solid var(--luctiv-red);
-        border-radius: 8px;
-        padding: clamp(1.45rem, 4vw, 2.35rem);
-        background: rgba(255, 255, 255, 0.96);
-        box-shadow: 0 20px 50px rgba(27, 27, 27, 0.08);
-        margin-bottom: 1.25rem;
-        overflow: hidden;
+        border-radius: 22px;
+        padding: 2rem 2.1rem;
+        background: rgba(255,255,255,0.94);
+        box-shadow: 0 18px 48px rgba(21, 66, 83, 0.08);
+        margin-bottom: 1.4rem;
     }
-    .luctiv-brand-row {
-        align-items: center;
-        display: flex;
-        gap: 0.8rem;
-        margin-bottom: 0.9rem;
-    }
-    .luctiv-mark {
-        align-items: center;
-        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-red-dark));
-        border-radius: 8px;
-        box-shadow: 0 12px 28px rgba(215, 25, 32, 0.24);
-        color: white;
-        display: flex;
-        font-size: 2rem;
-        font-weight: 900;
-        height: 64px;
-        justify-content: center;
-        line-height: 1;
-        width: 64px;
+    .luctiv-kicker {
+        color: var(--luctiv-blue);
+        font-size: 0.82rem;
+        letter-spacing: 0.18em;
+        font-weight: 800;
+        margin-bottom: 0.35rem;
     }
     .luctiv-title {
         color: var(--luctiv-ink);
-        font-size: clamp(2.7rem, 8vw, 5.1rem);
-        letter-spacing: 0;
+        font-size: clamp(2.6rem, 7vw, 4.6rem);
+        letter-spacing: -0.06em;
         line-height: 0.95;
-        font-weight: 900;
+        font-weight: 850;
         margin: 0;
     }
     .luctiv-subtitle {
-        color: var(--luctiv-muted);
-        max-width: 760px;
-        font-size: 1.08rem;
-        margin: 0;
-        line-height: 1.62;
-    }
-    .luctiv-rule {
-        background: linear-gradient(90deg, var(--luctiv-red), var(--luctiv-red-dark), var(--luctiv-charcoal));
-        border-radius: 999px;
-        height: 4px;
-        margin-top: 1.15rem;
-        width: 156px;
+        color: #526672;
+        max-width: 680px;
+        font-size: 1.04rem;
+        margin: 1rem 0 0 0;
+        line-height: 1.6;
     }
     div[data-testid="stFileUploader"] {
-        border: 1px dashed rgba(215, 25, 32, 0.45);
-        border-radius: 8px;
-        padding: 0.65rem 0.85rem 0.25rem;
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 12px 32px rgba(18, 24, 32, 0.05);
-    }
-    div[data-testid="stMetric"] {
-        background: #FFFFFF;
-        border: 1px solid var(--luctiv-gray);
-        border-radius: 8px;
-        padding: 0.72rem 0.8rem;
+        border: 1px dashed #8BC8D5;
+        border-radius: 18px;
+        padding: 0.45rem 0.75rem 0.15rem;
+        background: var(--luctiv-soft);
     }
     div.stButton > button, div.stDownloadButton > button {
-        border-radius: 8px;
+        border-radius: 12px;
         min-height: 3rem;
         font-weight: 750;
         border: none;
     }
     div.stButton > button[kind="primary"], div.stDownloadButton > button {
-        background: linear-gradient(135deg, var(--luctiv-red), var(--luctiv-red-dark));
+        background: linear-gradient(135deg, var(--luctiv-blue), var(--luctiv-cyan));
         color: white;
     }
-    div[data-testid="stExpander"] {
+    .luctiv-flow {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem;
+        margin: 1rem 0 0.45rem;
+    }
+    .luctiv-flow-step {
         border: 1px solid var(--luctiv-border);
-        border-radius: 8px;
-        box-shadow: 0 10px 26px rgba(18, 24, 32, 0.04);
+        border-radius: 14px;
+        background: var(--luctiv-soft);
+        color: var(--luctiv-ink);
+        padding: 0.85rem 0.9rem;
+        font-size: 0.88rem;
+        font-weight: 750;
+        text-align: center;
+    }
+    .luctiv-flow-step span {
+        display: inline-block;
+        color: #16835B;
+        margin-right: 0.3rem;
     }
     .luctiv-note {
         color: #617581;
@@ -124,56 +113,414 @@ st.markdown(
         padding-top: 1rem;
         margin-top: 1.5rem;
     }
+    .luctiv-result-heading {
+        min-height: 3.35rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .luctiv-result-heading h1 {
+        color: var(--luctiv-ink);
+        font-size: 1.75rem;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        margin: 0;
+    }
+    .luctiv-result-heading p {
+        color: #617581;
+        font-size: 0.78rem;
+        margin: 0.28rem 0 0;
+    }
+    .luctiv-kpis {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 0.42rem;
+    }
+    .luctiv-kpi {
+        min-width: 0;
+        border-left: 3px solid var(--luctiv-cyan);
+        background: rgba(239, 248, 250, 0.84);
+        padding: 0.42rem 0.62rem;
+    }
+    .luctiv-kpi-label {
+        color: #617581;
+        font-size: 0.66rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+    .luctiv-kpi-value {
+        color: var(--luctiv-ink);
+        font-size: 1.05rem;
+        font-weight: 800;
+        line-height: 1.15;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .luctiv-summary {
+        height: 485px;
+        padding: 0.75rem 0.2rem 0 0.85rem;
+        border-left: 1px solid var(--luctiv-border);
+        color: var(--luctiv-ink);
+    }
+    .luctiv-summary h3 {
+        font-size: 1rem;
+        margin: 0 0 0.65rem;
+    }
+    .luctiv-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.45rem;
+    }
+    .luctiv-summary-item {
+        background: var(--luctiv-soft);
+        padding: 0.55rem 0.62rem;
+        min-width: 0;
+    }
+    .luctiv-summary-label {
+        color: #617581;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+    }
+    .luctiv-summary-value {
+        font-size: 1.12rem;
+        font-weight: 800;
+        line-height: 1.15;
+    }
+    .luctiv-status-list {
+        margin-top: 0.7rem;
+        border-top: 1px solid var(--luctiv-border);
+        padding-top: 0.55rem;
+    }
+    .luctiv-status-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        color: #526672;
+        font-size: 0.74rem;
+        padding: 0.2rem 0;
+    }
+    .luctiv-status-dot {
+        width: 0.48rem;
+        height: 0.48rem;
+        border-radius: 50%;
+        background: #16835B;
+        flex: 0 0 auto;
+    }
+    .luctiv-source-note {
+        color: #617581;
+        font-size: 0.7rem;
+        line-height: 1.35;
+        margin: 0.65rem 0 0;
+    }
+    @media (max-width: 720px) {
+        .luctiv-flow { grid-template-columns: 1fr; }
+        .luctiv-hero { padding: 1.5rem; }
+        .luctiv-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
-    <section class="luctiv-hero">
-        <div class="luctiv-brand-row">
-            <div class="luctiv-mark">L</div>
+def _render_upload_controls(compact: bool):
+    controls = (
+        st.popover("Archivo")
+        if compact
+        else st.container()
+    )
+    with controls:
+        uploaded = st.file_uploader(
+            "Excel del pozo o paquete del PAD",
+            type=["xlsm", "xlsx", "zip"],
+            help=(
+                "Podés cargar un Excel individual o el ZIP recibido para procesar "
+                "automáticamente todos los pozos compatibles."
+            ),
+            key="luctiv_workbook",
+        )
+
+        if compact:
+            manual_time = st.number_input(
+                "Tiempo manual de referencia (minutos)",
+                min_value=1,
+                max_value=480,
+                value=45,
+                step=5,
+                help="Se usa solo para estimar el ahorro; no modifica el Excel.",
+                key="luctiv_manual_minutes",
+            )
+        else:
+            with st.expander("Referencia para estimar eficiencia", expanded=False):
+                manual_time = st.number_input(
+                    "Tiempo manual estimado para preparar y verificar un archivo (minutos)",
+                    min_value=1,
+                    max_value=480,
+                    value=45,
+                    step=5,
+                    help="Este valor solo se usa para estimar el ahorro de tiempo; no modifica el Excel.",
+                    key="luctiv_manual_minutes",
+                )
+
+        invalid = (
+            uploaded is not None
+            and Path(uploaded.name).suffix.lower() not in SUPPORTED_SUFFIXES
+        )
+        if invalid:
+            st.error(
+                "LUCTIV solo acepta Excel .xlsm/.xlsx o un paquete .zip.",
+                icon="⛔",
+            )
+        if uploaded is not None:
+            size_mb = uploaded.size / (1024 * 1024)
+            st.caption(f"Archivo seleccionado: **{uploaded.name}** · {size_mb:.2f} MB")
+
+        clicked = st.button(
+            "Procesar archivo" if not compact else "Volver a procesar",
+            type="primary",
+            use_container_width=True,
+            disabled=uploaded is None or invalid,
+            key="luctiv_process_button",
+        )
+    return uploaded, manual_time, clicked
+
+
+cached_generated = st.session_state.get("luctiv_generated")
+has_cached_result = cached_generated is not None
+
+if isinstance(cached_generated, GeneratedPackage):
+    elapsed_seconds = float(st.session_state.get("luctiv_elapsed_seconds", 0.0))
+    total_stages = sum(
+        len(item.generated.result.stages) for item in cached_generated.workbooks
+    )
+    total_clusters = sum(
+        len(item.generated.result.clusters) for item in cached_generated.workbooks
+    )
+    total_survey = sum(
+        len(item.generated.result.survey) for item in cached_generated.workbooks
+    )
+    failed_items = [
+        issue for issue in cached_generated.issues if issue.category == "error"
+    ]
+    ignored_items = [
+        issue for issue in cached_generated.issues if issue.category == "ignored"
+    ]
+
+    title_col, new_col, download_col = st.columns(
+        [5.0, 1.0, 1.35],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with title_col:
+        st.markdown(
+            f"""
+            <div class="luctiv-result-heading">
+                <h1>LUCTIV · PAD procesado</h1>
+                <p>{cached_generated.processed_count} Excel terminados ·
+                {cached_generated.failed_count} archivos requieren revisión</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with new_col:
+        if st.button("Nuevo archivo", use_container_width=True):
+            st.session_state.pop("luctiv_generated", None)
+            st.session_state.pop("luctiv_elapsed_seconds", None)
+            st.session_state.pop("luctiv_upload_fingerprint", None)
+            st.rerun()
+    with download_col:
+        st.download_button(
+            "Descargar ZIP",
+            data=cached_generated.data,
+            file_name=cached_generated.output_filename,
+            mime="application/zip",
+            on_click="ignore",
+            use_container_width=True,
+            type="primary",
+        )
+
+    metrics = st.columns(6)
+    metrics[0].metric("Procesados", cached_generated.processed_count)
+    metrics[1].metric("Con error", cached_generated.failed_count)
+    metrics[2].metric("Auxiliares", cached_generated.ignored_count)
+    metrics[3].metric("Etapas", total_stages)
+    metrics[4].metric("Clústeres", f"{total_clusters:,}".replace(",", "."))
+    metrics[5].metric("Tiempo", f"{elapsed_seconds:.2f} s")
+
+    if failed_items:
+        subject = "pozo no se pudo generar" if len(failed_items) == 1 else "pozos no se pudieron generar"
+        st.warning(
+            f"{len(failed_items)} {subject}. Revisá el aviso antes de usar el lote. "
+            "Los demás Excel están disponibles en el ZIP de descarga.",
+            icon="⚠️",
+        )
+
+    st.subheader("Resultados por pozo")
+    for item in cached_generated.workbooks:
+        result = item.generated.result
+        st.success(
+            f"{result.well_name}: {len(result.stages)} etapas, "
+            f"{len(result.clusters)} clústeres y {len(result.survey)} registros Survey.",
+            icon="✅",
+        )
+    if failed_items:
+        with st.expander(
+            f"Archivos que requieren revisión ({len(failed_items)})",
+            expanded=True,
+        ):
+            for issue in failed_items:
+                st.warning(f"**{issue.source_filename}:** {issue.message}", icon="⚠️")
+    if ignored_items:
+        with st.expander(f"Archivos auxiliares ignorados ({len(ignored_items)})"):
+            for issue in ignored_items:
+                st.info(f"**{issue.source_filename}:** {issue.message}")
+    st.caption(
+        f"Survey total leído: {total_survey:,} registros. El ZIP descargable también "
+        "incluye Survey TXT/CSV por pozo y RESUMEN_PROCESAMIENTO.txt."
+    )
+    st.stop()
+
+if has_cached_result:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] { overflow: hidden; }
+        .block-container {
+            max-width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            padding: 2.2rem 1.15rem 0.15rem;
+        }
+        .block-container > div:first-child > div[data-testid="stVerticalBlock"] {
+            gap: 0.34rem;
+        }
+        div[data-testid="stPlotlyChart"] { margin-top: -0.2rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cached_result = cached_generated.result
+    title_col, file_col, controls_col, download_col, txt_col, csv_col = st.columns(
+        [3.8, 0.8, 0.85, 1.15, 0.9, 0.9],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with file_col:
+        uploaded_file, manual_minutes, process_clicked = _render_upload_controls(
+            compact=True
+        )
+
+    elapsed_seconds = float(st.session_state.get("luctiv_elapsed_seconds", 0.0))
+    cached_impact = calculate_impact_metrics(
+        cached_result,
+        elapsed_seconds,
+        manual_minutes,
+    )
+    with title_col:
+        st.markdown(
+            f"""
+            <div class="luctiv-result-heading">
+                <h1>LUCTIV · {escape(cached_result.well_name)}</h1>
+                <p>Análisis completado · Excel terminado listo para revisar</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with controls_col:
+        with st.popover("Controles"):
+            st.markdown(
+                f"**{cached_impact.checks_passed}/{cached_impact.checks_passed} validaciones aprobadas**"
+            )
+            for check in cached_result.checks:
+                st.caption(f"✅ {check}")
+            if cached_result.warnings:
+                st.divider()
+                for warning in cached_result.warnings:
+                    st.warning(warning, icon="⚠️")
+            else:
+                st.caption("✅ Sin sobreescrituras u observaciones")
+            if cached_result.source_sheets:
+                st.divider()
+                st.caption("**Origen detectado**")
+                for logical_name, location in cached_result.source_sheets.items():
+                    st.caption(f"{logical_name}: {location}")
+            st.divider()
+            st.caption(
+                f"Referencia manual: {manual_minutes} min · "
+                f"automatizado: {cached_impact.elapsed_seconds:.2f} s · "
+                f"eficiencia estimada: {cached_impact.estimated_efficiency_percent:.2f}%"
+            )
+    with download_col:
+        st.download_button(
+            "Descargar Excel",
+            data=cached_generated.data,
+            file_name=cached_result.output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            on_click="ignore",
+            use_container_width=True,
+            type="primary",
+        )
+    with txt_col:
+        st.download_button(
+            "Survey TXT",
+            data=cached_generated.survey_txt_data,
+            file_name=cached_generated.survey_txt_filename,
+            mime="text/plain",
+            on_click="ignore",
+            use_container_width=True,
+        )
+    with csv_col:
+        st.download_button(
+            "Survey CSV",
+            data=cached_generated.survey_csv_data,
+            file_name=cached_generated.survey_csv_filename,
+            mime="text/csv",
+            on_click="ignore",
+            use_container_width=True,
+        )
+else:
+    st.markdown(
+        """
+        <section class="luctiv-hero">
+            <div class="luctiv-kicker">EXCEL PROCESSOR</div>
             <h1 class="luctiv-title">LUCTIV</h1>
-        </div>
-        <p class="luctiv-subtitle">
-            Hola inge! Carg&aacute; el archivo del pozo, procesalo y descarg&aacute; el archivo excel terminado con los datos para hacer Smart Staging y IFS. Enjoy it.
-        </p>
-        <div class="luctiv-rule"></div>
-    </section>
-    """,
-    unsafe_allow_html=True,
-)
-
-uploaded_file = st.file_uploader(
-    "Archivo del pozo",
-    type=["xlsm", "xlsx"],
-    help="El archivo debe contener las hojas Input, Survey y Punzados.",
-)
-
-invalid_extension = (
-    uploaded_file is not None
-    and Path(uploaded_file.name).suffix.lower() not in SUPPORTED_SUFFIXES
-)
-if invalid_extension:
-    st.error("LUCTIV solo acepta archivos Excel .xlsm o .xlsx.", icon="⛔")
-
-process_clicked = st.button(
-    "Procesar archivo",
-    type="primary",
-    use_container_width=True,
-    disabled=uploaded_file is None or invalid_extension,
-)
+            <p class="luctiv-subtitle">
+                Cargá el archivo original del pozo, procesalo y descargá el Excel terminado
+                con Datos Fractura, Survey, Smart Staging y Wellbore IFS.
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    uploaded_file, manual_minutes, process_clicked = _render_upload_controls(
+        compact=False
+    )
 
 if uploaded_file is not None:
-    size_mb = uploaded_file.size / (1024 * 1024)
-    st.caption(f"Archivo seleccionado: **{uploaded_file.name}** · {size_mb:.2f} MB")
+
+    uploaded_bytes = uploaded_file.getvalue()
+    upload_fingerprint = sha256(uploaded_bytes).hexdigest()
+    if st.session_state.get("luctiv_upload_fingerprint") != upload_fingerprint:
+        st.session_state["luctiv_upload_fingerprint"] = upload_fingerprint
+        st.session_state.pop("luctiv_generated", None)
+        st.session_state.pop("luctiv_elapsed_seconds", None)
+else:
+    uploaded_bytes = None
+    upload_fingerprint = None
+    st.session_state.pop("luctiv_upload_fingerprint", None)
+    st.session_state.pop("luctiv_generated", None)
+    st.session_state.pop("luctiv_elapsed_seconds", None)
 
 if process_clicked and uploaded_file is not None:
     with st.spinner("Analizando configuraciones, Survey y punzados…"):
+        started_at = perf_counter()
         try:
-            generated = process_uploaded_workbook(
-                file_bytes=uploaded_file.getvalue(),
+            generated = process_uploaded_package(
+                file_bytes=uploaded_bytes,
                 filename=uploaded_file.name,
                 template_path=TEMPLATE_PATH,
             )
@@ -191,65 +538,89 @@ if process_clicked and uploaded_file is not None:
             )
             st.stop()
 
+        st.session_state["luctiv_generated"] = generated
+        st.session_state["luctiv_elapsed_seconds"] = perf_counter() - started_at
+        st.rerun()
+
+generated = st.session_state.get("luctiv_generated")
+if generated is not None and uploaded_file is not None:
     result = generated.result
-    st.success(f"{result.well_name} fue procesado correctamente.", icon="✅")
+    elapsed_seconds = float(st.session_state.get("luctiv_elapsed_seconds", 0.0))
+    impact = calculate_impact_metrics(result, elapsed_seconds, manual_minutes)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Pozo", result.well_name)
-    col2.metric("Etapas", len(result.stages))
-    col3.metric("Clústeres", len(result.clusters))
-    col4.metric("Survey", len(result.survey))
-
-    col5, col6, col7 = st.columns(3)
-    col5.metric("Configuraciones", len(result.fracture_configs))
-    col6.metric("Filas Wellbore", result.wellbore_row_count)
-    col7.metric("Sobreescrituras", result.override_count)
-
-    with st.expander("Ver validaciones", expanded=True):
-        for check in result.checks:
-            st.write(f"✅ {check}")
-        if result.warnings:
-            st.divider()
-            for warning in result.warnings:
-                st.warning(warning, icon="⚠️")
-        else:
-            st.write("✅ Sin sobreescrituras u observaciones detectadas")
-
-    download_excel, download_txt, download_csv = st.columns(3)
-    with download_excel:
-        st.download_button(
-            "Descargar Excel",
-            data=generated.data,
-            file_name=result.output_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            on_click="ignore",
-            use_container_width=True,
+    kpis = [
+        ("Procesamiento", f"{impact.elapsed_seconds:.2f} s"),
+        ("Valores preparados", f"{impact.values_prepared:,}".replace(",", ".")),
+        ("Controles", f"{impact.checks_passed}/{impact.checks_passed}"),
+        ("Ahorro estimado", f"{impact.estimated_minutes_saved:.2f} min"),
+        ("Etapas", str(len(result.stages))),
+        ("Clústeres", f"{len(result.clusters):,}".replace(",", ".")),
+    ]
+    st.markdown(
+        '<div class="luctiv-kpis">'
+        + "".join(
+            f'<div class="luctiv-kpi"><div class="luctiv-kpi-label">{label}</div>'
+            f'<div class="luctiv-kpi-value">{value}</div></div>'
+            for label, value in kpis
         )
-    with download_txt:
-        st.download_button(
-            "Survey TXT",
-            data=generated.survey_txt_data,
-            file_name=generated.survey_txt_filename,
-            mime="text/plain",
-            on_click="ignore",
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    trajectory_col, summary_col = st.columns([2.75, 0.85], gap="small")
+    with trajectory_col:
+        figure, trajectory_source = build_well_figure(result, height=485)
+        st.plotly_chart(
+            figure,
             use_container_width=True,
+            theme="streamlit",
+            key=f"well-trajectory-{upload_fingerprint[:12]}",
+            config={
+                "displaylogo": False,
+                "scrollZoom": True,
+                "modeBarButtonsToRemove": ["select2d", "lasso2d"],
+            },
         )
-    with download_csv:
-        st.download_button(
-            "Survey CSV",
-            data=generated.survey_csv_data,
-            file_name=generated.survey_csv_filename,
-            mime="text/csv",
-            on_click="ignore",
-            use_container_width=True,
+    with summary_col:
+        source_note = (
+            "Trayectoria construida con DX/DY y TVD del Survey."
+            if trajectory_source == "survey"
+            else "Trayectoria relativa reconstruida por curvatura mínima."
+        )
+        summary_items = [
+            ("Etapas", len(result.stages)),
+            ("Clústeres", len(result.clusters)),
+            ("Survey", len(result.survey)),
+            ("Wellbore", result.wellbore_row_count),
+            ("Configuraciones", len(result.fracture_configs)),
+            ("Sobreescrituras", result.override_count),
+        ]
+        st.markdown(
+            '<section class="luctiv-summary"><h3>Resumen técnico</h3>'
+            '<div class="luctiv-summary-grid">'
+            + "".join(
+                '<div class="luctiv-summary-item">'
+                f'<div class="luctiv-summary-label">{label}</div>'
+                f'<div class="luctiv-summary-value">{value}</div></div>'
+                for label, value in summary_items
+            )
+            + '</div><div class="luctiv-status-list">'
+            + "".join(
+                '<div class="luctiv-status-row"><span class="luctiv-status-dot"></span>'
+                f'{step}</div>'
+                for step in ("Lectura", "Validación", "Generación", "Verificación")
+            )
+            + f'</div><p class="luctiv-source-note">{source_note}</p></section>',
+            unsafe_allow_html=True,
         )
 
-st.markdown(
-    """
-    <div class="luctiv-note">
-        Los archivos se procesan en memoria durante la sesión. LUCTIV no necesita que
-        el usuario instale Excel, Python ni ningún programa adicional.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+if not has_cached_result:
+    st.markdown(
+        """
+        <div class="luctiv-note">
+            Los archivos se procesan en memoria durante la sesión. LUCTIV no necesita que
+            el usuario instale Excel, Python ni ningún programa adicional.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

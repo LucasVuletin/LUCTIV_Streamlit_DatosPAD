@@ -5,22 +5,61 @@ from dataclasses import dataclass, field
 from io import BytesIO
 import math
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 import unicodedata
 from typing import BinaryIO, Iterable
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from openpyxl import load_workbook
 from openpyxl.cell import Cell
+from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 
 REQUIRED_SHEETS = ("Input", "Survey", "Punzados")
 TEMPLATE_SHEET = "Datos terminados"
 ALLOWED_EXTENSIONS = {".xlsm", ".xlsx"}
+ALLOWED_UPLOAD_EXTENSIONS = ALLOWED_EXTENSIONS | {".zip"}
 FORMULA_ERROR_VALUES = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A"}
-GENERAL_NUMBER_FORMAT = "General"
-INTEGER_NUMBER_FORMAT = "0"
-CLUSTER_BASE_HEADER_ALIASES = ("Base Cluster MD", "Fondo Cluster MD")
+MAX_PACKAGE_EXCEL_FILES = 50
+MAX_PACKAGE_ENTRY_BYTES = 25 * 1024 * 1024
+MAX_PACKAGE_TOTAL_BYTES = 150 * 1024 * 1024
+
+CONFIG_HEADER_GROUPS = (
+    ("Etapas", "Rango de etapas", "Stage range"),
+    ("Inicio", "Etapa inicial", "Start stage", "From stage"),
+    ("Fin", "Etapa final", "End stage", "To stage"),
+    ("N° Cl", "N Cl", "Nro Cl", "Cantidad de clusters", "Clusters", "Cluster count"),
+    ("SPF", "Tiros por pie", "Shots per foot"),
+)
+SURVEY_HEADER_GROUPS = (
+    ("MD", "Measured depth", "Prof [m]", "Profundidad medida"),
+    ("TVD", "True vertical depth", "Pfv [m]", "Profundidad vertical"),
+    ("INCL", "Inclination", "Inclinacion", "Desviac. Vert", "Desviacion vertical"),
+    ("AZIM_TN", "Azimuth", "Azimut", "AZIM"),
+)
+CLUSTER_BASE_HEADER_ALIASES = (
+    "Base Cluster MD",
+    "Fondo Cluster MD",
+    "Base cluster",
+    "Fondo cluster",
+    "Cluster base",
+    "Bottom MD",
+)
+CLUSTER_HEADER_GROUPS = (
+    ("# Cluster", "Numero de cluster", "Cluster number"),
+    ("Tope Cluster MD", "Tope cluster", "Cluster top", "Top MD"),
+    CLUSTER_BASE_HEADER_ALIASES,
+    ("Numero etapa", "Etapa", "Stage number"),
+    ("N° de tiros x cluster", "Tiros x cluster", "SPF", "Shots per foot"),
+)
+
+TABLE_SHEET_ALIASES = {
+    "Input": ("Input", "Entrada", "Datos de entrada", "Configuracion"),
+    "Survey": ("Survey", "Directional Survey", "Direccional", "Trayectoria"),
+    "Punzados": ("Punzados", "Perforaciones", "Perforation", "Clusters"),
+}
 
 
 class LuctivError(Exception):
@@ -46,6 +85,8 @@ class SurveyPoint:
     inclination: float
     azimuth: float
     tvd: float
+    dx: float | None = None
+    dy: float | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +119,7 @@ class ProcessingResult:
     stages: list[StageInterval]
     warnings: list[str] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
+    source_sheets: dict[str, str] = field(default_factory=dict)
 
     @property
     def wellbore_row_count(self) -> int:
@@ -86,7 +128,6 @@ class ProcessingResult:
     @property
     def override_count(self) -> int:
         return sum(1 for cluster in self.clusters if cluster.override_note)
-
 
 @dataclass(frozen=True)
 class GeneratedWorkbook:
@@ -106,13 +147,51 @@ class GeneratedWorkbook:
         return f"{stem}_survey_md_inclination_azimuth.csv"
 
 
+@dataclass(frozen=True)
+class PackageWorkbook:
+    source_filename: str
+    generated: GeneratedWorkbook
+
+
+@dataclass(frozen=True)
+class PackageIssue:
+    source_filename: str
+    message: str
+    category: str = "error"
+
+
+@dataclass(frozen=True)
+class GeneratedPackage:
+    output_filename: str
+    data: bytes
+    workbooks: tuple[PackageWorkbook, ...]
+    issues: tuple[PackageIssue, ...]
+
+    @property
+    def processed_count(self) -> int:
+        return len(self.workbooks)
+
+    @property
+    def issue_count(self) -> int:
+        return len(self.issues)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.category == "error")
+
+    @property
+    def ignored_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.category == "ignored")
+
+
 def _normalize_text(value: object) -> str:
     if value is None:
         return ""
     text = str(value).strip().lower()
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^a-z0-9#]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _is_number(value: object) -> bool:
@@ -160,25 +239,88 @@ def _as_int(value: object, field_name: str, row_number: int) -> int:
 
 def _find_header_row(
     sheet: Worksheet,
-    required_terms: Iterable[str | Iterable[str]],
+    required_terms: Iterable[str],
     max_scan_rows: int = 60,
 ) -> int:
-    required = [
-        tuple(_normalize_text(alias) for alias in term)
-        if not isinstance(term, str)
-        else (_normalize_text(term),)
-        for term in required_terms
-    ]
+    required = [_normalize_text(term) for term in required_terms]
     for row_idx in range(1, min(sheet.max_row, max_scan_rows) + 1):
         values = [_normalize_text(cell.value) for cell in sheet[row_idx]]
-        if all(
-            any(alias == value or alias in value for alias in aliases for value in values)
-            for aliases in required
-        ):
+        if all(any(term == value or term in value for value in values) for term in required):
             return row_idx
     raise InvalidWorkbookError(
         f"No se pudo localizar el encabezado esperado en la hoja '{sheet.title}'."
     )
+
+
+def _find_header_row_by_alias_groups(
+    sheet: Worksheet,
+    required_groups: Iterable[Iterable[str]],
+    max_scan_rows: int = 60,
+    max_scan_columns: int = 80,
+) -> int:
+    """Find a header row by canonical fields instead of literal column names."""
+    groups = tuple(tuple(group) for group in required_groups)
+    last_row = min(sheet.max_row, max_scan_rows)
+    last_column = min(sheet.max_column, max_scan_columns)
+    for row_idx in range(1, last_row + 1):
+        headers = {
+            cell.column: _normalize_text(cell.value)
+            for cell in sheet[row_idx][:last_column]
+            if cell.value not in (None, "")
+        }
+        if headers and all(_find_column_or_none(headers, aliases) is not None for aliases in groups):
+            return row_idx
+    raise InvalidWorkbookError(
+        f"No se pudo localizar el encabezado esperado en la hoja '{sheet.title}'."
+    )
+
+
+def _sheet_name_priority(sheet_name: str, aliases: Iterable[str]) -> int:
+    normalized_name = _normalize_text(sheet_name)
+    normalized_aliases = tuple(_normalize_text(alias) for alias in aliases)
+    if normalized_name in normalized_aliases:
+        return 2
+    if any(alias and alias in normalized_name for alias in normalized_aliases):
+        return 1
+    return 0
+
+
+def _locate_table(
+    workbook: Workbook,
+    logical_name: str,
+    required_groups: Iterable[Iterable[str]],
+    *,
+    max_scan_rows: int,
+) -> tuple[Worksheet, int] | None:
+    """Locate one logical table anywhere in the workbook, preferring familiar sheet names."""
+    aliases = TABLE_SHEET_ALIASES[logical_name]
+    candidates: list[tuple[int, int, Worksheet, int]] = []
+    for sheet_index, sheet in enumerate(workbook.worksheets):
+        try:
+            header_row = _find_header_row_by_alias_groups(
+                sheet,
+                required_groups,
+                max_scan_rows=max_scan_rows,
+            )
+        except InvalidWorkbookError:
+            continue
+        candidates.append(
+            (_sheet_name_priority(sheet.title, aliases), sheet_index, sheet, header_row)
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[3]))
+    best_priority = candidates[0][0]
+    best = [candidate for candidate in candidates if candidate[0] == best_priority]
+    if len(best) > 1:
+        sheet_names = ", ".join(f"'{candidate[2].title}'" for candidate in best[:8])
+        raise InvalidWorkbookError(
+            f"Se encontraron varias tablas posibles para {logical_name}: {sheet_names}. "
+            "No se puede elegir una automáticamente sin riesgo."
+        )
+    return candidates[0][2], candidates[0][3]
 
 
 def _find_column(headers: dict[int, str], aliases: Iterable[str]) -> int:
@@ -241,14 +383,6 @@ def _survey_delimited_data(result: ProcessingResult, delimiter: str) -> bytes:
     return ("\r\n".join(lines) + "\r\n").encode("utf-8")
 
 
-def _survey_txt_data(result: ProcessingResult) -> bytes:
-    return _survey_delimited_data(result, "\t")
-
-
-def _survey_csv_data(result: ProcessingResult) -> bytes:
-    return _survey_delimited_data(result, ",")
-
-
 def _smart_staging_stages(result: ProcessingResult) -> list[StageInterval]:
     return sorted(result.stages, key=lambda stage: stage.stage, reverse=True)
 
@@ -261,21 +395,27 @@ def _wellbore_ifs_stages(result: ProcessingResult) -> list[StageInterval]:
     )
 
 
-def _extract_fracture_configs(sheet: Worksheet) -> list[FractureConfig]:
-    header_row = _find_header_row(sheet, ("Etapas", "Inicio", "Fin", "SPF"))
+def _extract_fracture_configs(
+    sheet: Worksheet,
+    header_row: int | None = None,
+) -> list[FractureConfig]:
+    header_row = header_row or _find_header_row_by_alias_groups(
+        sheet,
+        CONFIG_HEADER_GROUPS,
+    )
     headers = {
         cell.column: _normalize_text(cell.value)
         for cell in sheet[header_row]
         if cell.value is not None
     }
-    col_label = _find_column(headers, ("Etapas",))
-    col_start = _find_column(headers, ("Inicio",))
-    col_end = _find_column(headers, ("Fin",))
+    col_label = _find_column(headers, ("Etapas", "Rango de etapas", "Stage range"))
+    col_start = _find_column(headers, ("Inicio", "Etapa inicial", "Start stage", "From stage"))
+    col_end = _find_column(headers, ("Fin", "Etapa final", "End stage", "To stage"))
     col_clusters = _find_column(
         headers,
-        ("N° Cl", "N Cl", "Nro Cl", "Cantidad de clusters", "Clusters"),
+        ("N° Cl", "N Cl", "Nro Cl", "Cantidad de clusters", "Clusters", "Cluster count"),
     )
-    col_spf = _find_column(headers, ("SPF",))
+    col_spf = _find_column(headers, ("SPF", "Tiros por pie", "Shots per foot"))
 
     configs: list[FractureConfig] = []
     blank_run = 0
@@ -307,21 +447,41 @@ def _extract_fracture_configs(sheet: Worksheet) -> list[FractureConfig]:
         )
 
     if not configs:
-        raise InvalidWorkbookError("No se encontraron configuraciones de fractura en 'Input'.")
+        raise InvalidWorkbookError(
+            f"No se encontraron configuraciones de fractura en '{sheet.title}'."
+        )
     return configs
 
 
-def _extract_survey(sheet: Worksheet) -> list[SurveyPoint]:
-    header_row = _find_header_row(sheet, ("MD", "TVD", "INCL"), max_scan_rows=15)
+def _extract_survey(
+    sheet: Worksheet,
+    header_row: int | None = None,
+) -> list[SurveyPoint]:
+    header_row = header_row or _find_header_row_by_alias_groups(
+        sheet,
+        SURVEY_HEADER_GROUPS,
+        max_scan_rows=60,
+    )
     headers = {
         cell.column: _normalize_text(cell.value)
         for cell in sheet[header_row]
         if cell.value is not None
     }
-    col_md = _find_column(headers, ("MD",))
-    col_tvd = _find_column(headers, ("TVD",))
-    col_incl = _find_column(headers, ("INCL", "Inclination"))
-    col_azim = _find_column(headers, ("AZIM_TN", "Azimuth", "AZIM"))
+    col_md = _find_column(headers, ("MD", "Measured depth", "Prof [m]", "Profundidad medida"))
+    col_tvd = _find_column(headers, ("TVD", "True vertical depth", "Pfv [m]", "Profundidad vertical"))
+    col_incl = _find_column(
+        headers,
+        ("INCL", "Inclination", "Inclinacion", "Desviac. Vert", "Desviacion vertical"),
+    )
+    col_azim = _find_column(headers, ("AZIM_TN", "Azimuth", "Azimut", "AZIM"))
+    col_dx = _find_column_or_none(
+        headers,
+        ("DX", "Dis EO", "Desplazamiento Este Oeste", "Easting", "East West"),
+    )
+    col_dy = _find_column_or_none(
+        headers,
+        ("DY", "Dis NS", "Desplazamiento Norte Sur", "Northing", "North South"),
+    )
 
     survey: list[SurveyPoint] = []
     for row_idx in range(header_row + 1, sheet.max_row + 1):
@@ -335,32 +495,52 @@ def _extract_survey(sheet: Worksheet) -> list[SurveyPoint]:
                 inclination=round(_as_float(sheet.cell(row_idx, col_incl).value, "INCL", row_idx), 2),
                 azimuth=round(_as_float(sheet.cell(row_idx, col_azim).value, "AZIM", row_idx), 2),
                 tvd=round(_as_float(sheet.cell(row_idx, col_tvd).value, "TVD", row_idx), 2),
+                dx=(
+                    round(dx_number, 2)
+                    if col_dx is not None
+                    and (dx_number := _coerce_float(sheet.cell(row_idx, col_dx).value)) is not None
+                    else None
+                ),
+                dy=(
+                    round(dy_number, 2)
+                    if col_dy is not None
+                    and (dy_number := _coerce_float(sheet.cell(row_idx, col_dy).value)) is not None
+                    else None
+                ),
             )
         )
 
     if not survey:
-        raise InvalidWorkbookError("No se encontraron registros numéricos en la hoja 'Survey'.")
+        raise InvalidWorkbookError(
+            f"No se encontraron registros numéricos en la hoja '{sheet.title}'."
+        )
     return survey
 
 
-def _extract_clusters(sheet: Worksheet) -> list[Cluster]:
-    header_row = _find_header_row(
+def _extract_clusters(
+    sheet: Worksheet,
+    header_row: int | None = None,
+) -> list[Cluster]:
+    header_row = header_row or _find_header_row_by_alias_groups(
         sheet,
-        ("# Cluster", "Tope Cluster MD", CLUSTER_BASE_HEADER_ALIASES, "Número etapa"),
-        max_scan_rows=15,
+        CLUSTER_HEADER_GROUPS,
+        max_scan_rows=60,
     )
     headers = {
         cell.column: _normalize_text(cell.value)
         for cell in sheet[header_row]
         if cell.value is not None
     }
-    col_number = _find_column(headers, ("# Cluster", "Cluster"))
-    col_top = _find_column(headers, ("Tope Cluster MD",))
+    col_number = _find_column(headers, ("# Cluster", "Numero de cluster", "Cluster number"))
+    col_top = _find_column(headers, ("Tope Cluster MD", "Tope cluster", "Cluster top", "Top MD"))
     col_base = _find_column(headers, CLUSTER_BASE_HEADER_ALIASES)
-    col_stage = _find_column(headers, ("Número etapa", "Numero etapa"))
-    col_spf = _find_column(headers, ("N° de tiros x cluster", "tiros x cluster"))
-    col_stage_length = _find_column_or_none(headers, ("Longitud de etapa",))
-    col_expected = _find_column_or_none(headers, ("Cantidad de clusters",))
+    col_stage = _find_column(headers, ("Número etapa", "Numero etapa", "Etapa", "Stage number"))
+    col_spf = _find_column(
+        headers,
+        ("N° de tiros x cluster", "tiros x cluster", "SPF", "Shots per foot"),
+    )
+    col_stage_length = _find_column_or_none(headers, ("Longitud de etapa", "Stage length"))
+    col_expected = _find_column_or_none(headers, ("Cantidad de clusters", "Cluster count"))
 
     override_col: int | None = None
     for col_idx, header in headers.items():
@@ -402,8 +582,71 @@ def _extract_clusters(sheet: Worksheet) -> list[Cluster]:
         )
 
     if not clusters:
-        raise InvalidWorkbookError("No se encontraron clústeres numéricos en la hoja 'Punzados'.")
+        raise InvalidWorkbookError(
+            f"No se encontraron clústeres numéricos en la hoja '{sheet.title}'."
+        )
     return clusters
+
+
+def _infer_fracture_configs(clusters: list[Cluster]) -> list[FractureConfig]:
+    """Build the Datos Fractura ranges when no separate configuration table exists."""
+    grouped: dict[int, list[Cluster]] = {}
+    for cluster in clusters:
+        grouped.setdefault(cluster.stage, []).append(cluster)
+
+    signatures: list[tuple[int, int, int]] = []
+    for stage in sorted(grouped):
+        spfs = {cluster.spf for cluster in grouped[stage]}
+        if len(spfs) != 1:
+            raise InvalidWorkbookError(
+                f"Etapa {stage}: no se puede inferir la configuración porque hay valores SPF inconsistentes."
+            )
+        signatures.append((stage, len(grouped[stage]), next(iter(spfs))))
+
+    configs: list[FractureConfig] = []
+    start_stage: int | None = None
+    end_stage: int | None = None
+    active_clusters: int | None = None
+    active_spf: int | None = None
+
+    for stage, cluster_count, spf in signatures:
+        is_continuation = (
+            end_stage is not None
+            and stage == end_stage + 1
+            and cluster_count == active_clusters
+            and spf == active_spf
+        )
+        if start_stage is None or not is_continuation:
+            if start_stage is not None:
+                configs.append(
+                    FractureConfig(
+                        label=f"ET {start_stage}-{end_stage}",
+                        start_stage=start_stage,
+                        end_stage=end_stage or start_stage,
+                        clusters=active_clusters or 0,
+                        spf=active_spf or 0,
+                    )
+                )
+            start_stage = stage
+            active_clusters = cluster_count
+            active_spf = spf
+        end_stage = stage
+
+    if start_stage is not None:
+        configs.append(
+            FractureConfig(
+                label=f"ET {start_stage}-{end_stage}",
+                start_stage=start_stage,
+                end_stage=end_stage or start_stage,
+                clusters=active_clusters or 0,
+                spf=active_spf or 0,
+            )
+        )
+    if not configs:
+        raise InvalidWorkbookError(
+            "No se pudo inferir la configuración de fractura desde los punzados."
+        )
+    return configs
 
 
 def _build_stages(
@@ -561,43 +804,88 @@ def analyze_workbook(file_obj: bytes | BinaryIO, filename: str) -> ProcessingRes
             "No se pudo abrir el archivo. Verificá que sea un Excel .xlsm o .xlsx válido."
         ) from exc
 
-    missing = [name for name in REQUIRED_SHEETS if name not in workbook.sheetnames]
-    if missing:
-        quoted = ", ".join(f'"{name}"' for name in missing)
-        if len(missing) == 1:
+    try:
+        survey_location = _locate_table(
+            workbook,
+            "Survey",
+            SURVEY_HEADER_GROUPS,
+            max_scan_rows=60,
+        )
+        if survey_location is None:
             raise InvalidWorkbookError(
-                f"No se encontró la hoja {quoted}. "
-                "Verificá que estés cargando el archivo Version 2 correspondiente al pozo."
+                'No se encontró la hoja "Survey" ni otra tabla con MD, INCL, AZIM y TVD.'
             )
-        raise InvalidWorkbookError(
-            f"No se encontraron las hojas {quoted}. "
-            "Verificá que estés cargando el archivo Version 2 correspondiente al pozo."
+
+        cluster_location = _locate_table(
+            workbook,
+            "Punzados",
+            CLUSTER_HEADER_GROUPS,
+            max_scan_rows=60,
+        )
+        if cluster_location is None:
+            raise InvalidWorkbookError(
+                'No se encontró la hoja "Punzados" ni otra tabla con etapa, clúster, Tope, Fondo y SPF.'
+            )
+
+        config_location = _locate_table(
+            workbook,
+            "Input",
+            CONFIG_HEADER_GROUPS,
+            max_scan_rows=80,
         )
 
-    input_sheet = workbook["Input"]
-    well_name = _extract_well_name(input_sheet, filename)
-    configs = _extract_fracture_configs(input_sheet)
-    survey = _extract_survey(workbook["Survey"])
-    clusters = _extract_clusters(workbook["Punzados"])
-    stages, warnings, checks = _build_stages(clusters, configs)
-    checks.extend(
-        [
-            f"{len(survey)} registros Survey",
-            f"{len(stages) * 2} filas Wellbore IFS",
-            "Tapones calculados como Fondo + 3,7 m",
-        ]
-    )
+        survey_sheet, survey_header_row = survey_location
+        cluster_sheet, cluster_header_row = cluster_location
+        clusters = _extract_clusters(cluster_sheet, cluster_header_row)
 
-    return ProcessingResult(
-        well_name=well_name,
-        output_filename=_safe_output_filename(well_name),
-        fracture_configs=configs,
-        survey=survey,
-        clusters=clusters,
-        stages=stages,
-        warnings=warnings,
-        checks=checks,
-    )
+        inferred_configs = config_location is None
+        if config_location is None:
+            configs = _infer_fracture_configs(clusters)
+            well_name = Path(filename).stem.replace("_version2", "")
+        else:
+            config_sheet, config_header_row = config_location
+            configs = _extract_fracture_configs(config_sheet, config_header_row)
+            well_name = _extract_well_name(config_sheet, filename)
+
+        survey = _extract_survey(survey_sheet, survey_header_row)
+        stages, warnings, checks = _build_stages(clusters, configs)
+        if inferred_configs:
+            warnings.insert(
+                0,
+                "No se encontró una tabla de configuración separada; Datos Fractura se infirió "
+                "desde la cantidad de clústeres y SPF de cada etapa.",
+            )
+            checks.append("Configuraciones de fractura inferidas desde Punzados")
+
+        source_sheets = {
+            "Survey": f"{survey_sheet.title} (fila {survey_header_row})",
+            "Punzados": f"{cluster_sheet.title} (fila {cluster_header_row})",
+        }
+        if config_location is not None:
+            source_sheets["Input"] = f"{config_sheet.title} (fila {config_header_row})"
+
+        checks.extend(
+            [
+                f"{len(survey)} registros Survey",
+                f"{len(stages) * 2} filas Wellbore IFS",
+                "Tapones calculados como Fondo + 3,7 m",
+                "Tablas de origen detectadas por encabezados",
+            ]
+        )
+
+        return ProcessingResult(
+            well_name=well_name,
+            output_filename=_safe_output_filename(well_name),
+            fracture_configs=configs,
+            survey=survey,
+            clusters=clusters,
+            stages=stages,
+            warnings=warnings,
+            checks=checks,
+            source_sheets=source_sheets,
+        )
+    finally:
+        workbook.close()
 
 
 def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str]:
@@ -621,6 +909,8 @@ def _check_generated_workbook(data: bytes, result: ProcessingResult) -> list[str
         )
 
     for row_idx, stage in enumerate(_smart_staging_stages(result), start=4):
+        if sheet.cell(row_idx, 13).value != stage.stage:
+            raise LuctivError(f"Smart Staging tiene una etapa incorrecta en la fila {row_idx}.")
         plug = sheet.cell(row_idx, 16).value
         fondo = sheet.cell(row_idx, 15).value
         if not isinstance(plug, (int, float)) or not isinstance(fondo, (int, float)):
@@ -706,6 +996,18 @@ def _clear_values(sheet: Worksheet, min_row: int, max_row: int, min_col: int, ma
             cell.value = None
 
 
+def _write_output_value(
+    sheet: Worksheet,
+    row: int,
+    column: int,
+    value: object,
+) -> None:
+    """Write an output value without inheriting custom numeric formats."""
+    cell = sheet.cell(row, column, value)
+    if _is_number(value):
+        cell.number_format = "General"
+
+
 def _ensure_styles(sheet: Worksheet, result: ProcessingResult) -> None:
     design_end = 2 + len(result.fracture_configs)
     survey_end = 3 + len(result.survey)
@@ -743,35 +1045,11 @@ def _set_number_format(
 
 
 def _normalize_output_number_formats(sheet: Worksheet, result: ProcessingResult) -> None:
-    _set_number_format(
-        sheet,
-        3,
-        2 + len(result.fracture_configs),
-        range(2, 6),
-        INTEGER_NUMBER_FORMAT,
-    )
-    _set_number_format(
-        sheet,
-        4,
-        3 + len(result.survey),
-        range(8, 12),
-        GENERAL_NUMBER_FORMAT,
-    )
-    _set_number_format(sheet, 4, 3 + len(result.stages), (13,), INTEGER_NUMBER_FORMAT)
-    _set_number_format(
-        sheet,
-        4,
-        3 + len(result.stages),
-        range(14, 17),
-        GENERAL_NUMBER_FORMAT,
-    )
-    _set_number_format(
-        sheet,
-        4,
-        3 + result.wellbore_row_count,
-        range(19, 21),
-        GENERAL_NUMBER_FORMAT,
-    )
+    _set_number_format(sheet, 3, 2 + len(result.fracture_configs), range(2, 6), "0")
+    _set_number_format(sheet, 4, 3 + len(result.survey), range(8, 12), "General")
+    _set_number_format(sheet, 4, 3 + len(result.stages), (13,), "0")
+    _set_number_format(sheet, 4, 3 + len(result.stages), range(14, 17), "General")
+    _set_number_format(sheet, 4, 3 + result.wellbore_row_count, range(19, 21), "General")
 
 
 def generate_finished_workbook(
@@ -811,26 +1089,26 @@ def generate_finished_workbook(
             config.spf,
         )
         for col_idx, value in enumerate(values, start=1):
-            sheet.cell(row_idx, col_idx, value)
+            _write_output_value(sheet, row_idx, col_idx, value)
 
     for row_idx, point in enumerate(result.survey, start=4):
-        sheet.cell(row_idx, 8, point.md)
-        sheet.cell(row_idx, 9, point.inclination)
-        sheet.cell(row_idx, 10, point.azimuth)
-        sheet.cell(row_idx, 11, point.tvd)
+        _write_output_value(sheet, row_idx, 8, point.md)
+        _write_output_value(sheet, row_idx, 9, point.inclination)
+        _write_output_value(sheet, row_idx, 10, point.azimuth)
+        _write_output_value(sheet, row_idx, 11, point.tvd)
 
     for row_idx, stage in enumerate(_smart_staging_stages(result), start=4):
-        sheet.cell(row_idx, 13, stage.stage)
-        sheet.cell(row_idx, 14, stage.top_md)
-        sheet.cell(row_idx, 15, stage.base_md)
-        sheet.cell(row_idx, 16, stage.plug_md)
+        _write_output_value(sheet, row_idx, 13, stage.stage)
+        _write_output_value(sheet, row_idx, 14, stage.top_md)
+        _write_output_value(sheet, row_idx, 15, stage.base_md)
+        _write_output_value(sheet, row_idx, 16, stage.plug_md)
 
     wellbore_row = 4
     for stage in _wellbore_ifs_stages(result):
         for label in ("Treatment Interval", "Perforations"):
             sheet.cell(wellbore_row, 18, label)
-            sheet.cell(wellbore_row, 19, stage.top_md)
-            sheet.cell(wellbore_row, 20, stage.base_md)
+            _write_output_value(sheet, wellbore_row, 19, stage.top_md)
+            _write_output_value(sheet, wellbore_row, 20, stage.base_md)
             wellbore_row += 1
 
     _normalize_output_number_formats(sheet, result)
@@ -855,8 +1133,8 @@ def generate_finished_workbook(
     return GeneratedWorkbook(
         result=result,
         data=data,
-        survey_txt_data=_survey_txt_data(result),
-        survey_csv_data=_survey_csv_data(result),
+        survey_txt_data=_survey_delimited_data(result, "\t"),
+        survey_csv_data=_survey_delimited_data(result, ","),
     )
 
 
@@ -869,3 +1147,214 @@ def process_uploaded_workbook(
         raise InvalidWorkbookError("LUCTIV solo acepta archivos Excel .xlsm o .xlsx.")
     result = analyze_workbook(file_bytes, filename)
     return generate_finished_workbook(result, template_path)
+
+
+def _safe_package_filename(filename: str) -> str:
+    stem = Path(filename).stem
+    cleaned = re.sub(r"[^A-Za-z0-9._()\-]+", "-", stem).strip("-_.")
+    return f"{cleaned or 'PAD'}_terminados.zip"
+
+
+def _package_member_filename(member_name: str) -> str:
+    normalized = member_name.replace("\\", "/")
+    return PurePosixPath(normalized).name
+
+
+def _unique_output_filename(filename: str, used_names: set[str]) -> str:
+    candidate = filename
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    counter = 2
+    while candidate.lower() in used_names:
+        candidate = f"{stem}-{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate.lower())
+    return candidate
+
+
+def _build_package_summary(
+    workbooks: Iterable[PackageWorkbook],
+    issues: Iterable[PackageIssue],
+) -> str:
+    workbook_items = tuple(workbooks)
+    issue_items = tuple(issues)
+    lines = [
+        "LUCTIV - Resumen de procesamiento del PAD",
+        f"Archivos generados: {len(workbook_items)}",
+        f"Archivos con error: {sum(1 for issue in issue_items if issue.category == 'error')}",
+        f"Archivos auxiliares ignorados: {sum(1 for issue in issue_items if issue.category == 'ignored')}",
+        "",
+        "GENERADOS",
+    ]
+    for item in workbook_items:
+        result = item.generated.result
+        lines.append(
+            f"- {item.source_filename} -> {result.output_filename} | "
+            f"pozo {result.well_name} | {len(result.stages)} etapas | "
+            f"{len(result.clusters)} clusters | {len(result.survey)} registros Survey"
+        )
+    failed_items = tuple(issue for issue in issue_items if issue.category == "error")
+    ignored_items = tuple(issue for issue in issue_items if issue.category == "ignored")
+    if failed_items:
+        lines.extend(("", "NO PROCESADOS / REQUIEREN REVISION"))
+        for issue in failed_items:
+            lines.append(f"- {issue.source_filename}: {issue.message}")
+    if ignored_items:
+        lines.extend(("", "ARCHIVOS AUXILIARES IGNORADOS"))
+        for issue in ignored_items:
+            lines.append(f"- {issue.source_filename}: {issue.message}")
+    return "\n".join(lines) + "\n"
+
+
+def _looks_like_single_well_workbook(file_bytes: bytes) -> bool:
+    """Differentiate an intended well workbook from auxiliary spreadsheets in a PAD ZIP."""
+    try:
+        workbook = load_workbook(
+            BytesIO(file_bytes),
+            read_only=False,
+            data_only=True,
+            keep_vba=False,
+            keep_links=False,
+        )
+    except Exception:
+        return True
+    try:
+        survey_location = _locate_table(
+            workbook,
+            "Survey",
+            SURVEY_HEADER_GROUPS,
+            max_scan_rows=60,
+        )
+        cluster_location = _locate_table(
+            workbook,
+            "Punzados",
+            CLUSTER_HEADER_GROUPS,
+            max_scan_rows=60,
+        )
+        return survey_location is not None and cluster_location is not None
+    except InvalidWorkbookError:
+        return False
+    finally:
+        workbook.close()
+
+
+def process_uploaded_package(
+    file_bytes: bytes,
+    filename: str,
+    template_path: str | Path,
+) -> GeneratedWorkbook | GeneratedPackage:
+    """Process either one workbook or every compatible workbook inside a ZIP package."""
+    suffix = Path(filename).suffix.lower()
+    if suffix in ALLOWED_EXTENSIONS:
+        return process_uploaded_workbook(file_bytes, filename, template_path)
+    if suffix != ".zip":
+        raise InvalidWorkbookError(
+            "LUCTIV solo acepta archivos Excel .xlsm/.xlsx o un paquete .zip."
+        )
+
+    try:
+        source_archive = ZipFile(BytesIO(file_bytes))
+    except BadZipFile as exc:
+        raise InvalidWorkbookError("El archivo .zip está dañado o no es un ZIP válido.") from exc
+
+    workbooks: list[PackageWorkbook] = []
+    issues: list[PackageIssue] = []
+    try:
+        excel_entries = [
+            info
+            for info in source_archive.infolist()
+            if not info.is_dir()
+            and Path(_package_member_filename(info.filename)).suffix.lower() in ALLOWED_EXTENSIONS
+        ]
+        if not excel_entries:
+            raise InvalidWorkbookError(
+                "El paquete no contiene archivos Excel .xlsm o .xlsx."
+            )
+        if len(excel_entries) > MAX_PACKAGE_EXCEL_FILES:
+            raise InvalidWorkbookError(
+                f"El paquete contiene {len(excel_entries)} Excel; el máximo permitido es "
+                f"{MAX_PACKAGE_EXCEL_FILES}."
+            )
+        total_uncompressed = sum(info.file_size for info in excel_entries)
+        if total_uncompressed > MAX_PACKAGE_TOTAL_BYTES:
+            raise InvalidWorkbookError(
+                "El contenido Excel descomprimido del paquete supera el máximo permitido."
+            )
+
+        for info in excel_entries:
+            member_filename = _package_member_filename(info.filename) or "archivo.xlsx"
+            if info.flag_bits & 0x1:
+                issues.append(
+                    PackageIssue(member_filename, "El archivo está cifrado con contraseña.")
+                )
+                continue
+            if info.file_size > MAX_PACKAGE_ENTRY_BYTES:
+                issues.append(
+                    PackageIssue(
+                        member_filename,
+                        "El archivo supera el tamaño máximo individual permitido.",
+                    )
+                )
+                continue
+            contents = b""
+            try:
+                contents = source_archive.read(info)
+                generated = process_uploaded_workbook(
+                    contents,
+                    member_filename,
+                    template_path,
+                )
+            except (InvalidWorkbookError, LuctivError, BadZipFile, RuntimeError) as exc:
+                category = (
+                    "error"
+                    if not contents or _looks_like_single_well_workbook(contents)
+                    else "ignored"
+                )
+                issues.append(PackageIssue(member_filename, str(exc), category))
+                continue
+            workbooks.append(PackageWorkbook(member_filename, generated))
+    finally:
+        source_archive.close()
+
+    if not workbooks:
+        details = "; ".join(
+            f"{issue.source_filename}: {issue.message}" for issue in issues[:3]
+        )
+        raise InvalidWorkbookError(
+            "No se pudo generar ningún Excel terminado desde el paquete. " + details
+        )
+
+    output = BytesIO()
+    used_names: set[str] = set()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as output_archive:
+        packaged_workbooks: list[PackageWorkbook] = []
+        for item in workbooks:
+            survey_txt_name = item.generated.survey_txt_filename
+            survey_csv_name = item.generated.survey_csv_filename
+            output_name = _unique_output_filename(
+                item.generated.result.output_filename,
+                used_names,
+            )
+            if output_name != item.generated.result.output_filename:
+                item.generated.result.output_filename = output_name
+            output_archive.writestr(output_name, item.generated.data)
+            output_archive.writestr(
+                _unique_output_filename(survey_txt_name, used_names),
+                item.generated.survey_txt_data,
+            )
+            output_archive.writestr(
+                _unique_output_filename(survey_csv_name, used_names),
+                item.generated.survey_csv_data,
+            )
+            packaged_workbooks.append(item)
+        output_archive.writestr(
+            "RESUMEN_PROCESAMIENTO.txt",
+            _build_package_summary(packaged_workbooks, issues),
+        )
+
+    return GeneratedPackage(
+        output_filename=_safe_package_filename(filename),
+        data=output.getvalue(),
+        workbooks=tuple(workbooks),
+        issues=tuple(issues),
+    )

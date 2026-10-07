@@ -1,32 +1,34 @@
 # LUCTIV
 
-LUCTIV es una aplicación web de Streamlit que procesa archivos Excel operativos de pozo (`.xlsm` o `.xlsx`) y genera un Excel terminado (`.xlsx`) con los bloques:
+LUCTIV es una aplicación web de Streamlit que procesa archivos Excel de pozo (`.xlsm` o `.xlsx`) o un ZIP de PAD con varios pozos. Genera un Excel terminado por pozo con los bloques:
 
 - DATOS FRACTURA
 - DATOS SURVEY
 - SMART STAGING
 - WELLBORE IFS
 
-El usuario final solo necesita abrir el enlace público de la aplicación, cargar el archivo y descargar el resultado. No debe instalar Python, Streamlit, Excel ni librerías locales.
+También entrega el Survey en TXT y CSV. El usuario final solo necesita abrir la aplicación, cargar el archivo y descargar el resultado.
 
 ## Funcionamiento
 
-1. Cargar un archivo `.xlsm` o `.xlsx`.
+1. Cargar un archivo `.xlsm`, `.xlsx` o un ZIP de PAD.
 2. Presionar `Procesar archivo`.
 3. Revisar métricas, validaciones y advertencias.
-4. Descargar el archivo terminado.
+4. Descargar el Excel y el Survey TXT/CSV. Para un PAD, descargar el ZIP con los resultados y el resumen del lote.
 
 LUCTIV no ejecuta macros, no modifica el archivo original y procesa el contenido en memoria.
 
+Después del procesamiento individual muestra una trayectoria 3D interactiva del pozo, el intervalo estimulado, las etapas y métricas de tiempo y volumen procesado. Usa DX/DY y TVD del Survey cuando están disponibles; de lo contrario reconstruye una trayectoria relativa con el método de curvatura mínima.
+
 ## Estructura Esperada
 
-El archivo fuente debe contener estas hojas:
+La aplicación localiza las tablas por sus encabezados, aunque las pestañas tengan otros nombres. Las tablas esperadas son:
 
 - `Input`
 - `Survey`
 - `Punzados`
 
-Desde `Input`, LUCTIV detecta dinámicamente las configuraciones de fractura: rango de etapas, etapa inicial, etapa final, cantidad de clústeres y SPF.
+Desde `Input`, LUCTIV detecta las configuraciones de fractura: rango de etapas, etapa inicial, etapa final, cantidad de clústeres y SPF. Si no hay tabla de configuración separada, las infiere desde Punzados y lo informa como advertencia.
 
 Desde `Survey`, genera las columnas:
 
@@ -42,7 +44,9 @@ Desde `Punzados`, agrupa los clústeres por etapa y calcula:
 - `FONDO`
 - `TAPON = FONDO + 3.7`
 
-El bloque `WELLBORE IFS` se genera en orden inverso, con dos filas por etapa:
+Para el fondo del clúster acepta tanto `Base Cluster MD` como `Fondo Cluster MD`, con o sin unidad `(m)`.
+
+`SMART STAGING` se ordena por número de etapa descendente. `WELLBORE IFS` se ordena por Tope MD descendente, con dos filas por etapa:
 
 - `Treatment Interval`
 - `Perforations`
@@ -93,22 +97,12 @@ pytest -q
 
 ## Despliegue En Streamlit Community Cloud
 
-1. Subir este proyecto a un repositorio de GitHub llamado `LUCTIV`.
-2. Entrar en Streamlit Community Cloud.
-3. Crear una aplicación nueva.
-4. Usar esta configuración:
-
-- Repository: `LUCTIV`
-- Branch: `main`
-- Main file path: `app.py`
-- App URL sugerida: `luctiv`
-
-Si `luctiv` no está disponible, usar una alternativa clara como `luctiv-app`, `luctiv-excel` o `luctiv-wellbore`.
+La app publicada usa `LucasVuletin/LUCTIV_Streamlit_DatosPAD`, rama `main`, archivo principal `app.py`. Streamlit Community Cloud actualiza la app al publicar cambios en esa rama. La dependencia `plotly` es necesaria para la trayectoria 3D.
 
 ## Privacidad
 
 - No se guardan archivos cargados de forma permanente.
-- No se suben archivos de pozo a servicios externos.
+- Los archivos cargados se transmiten a Streamlit Community Cloud para procesarlos durante la sesión.
 - No se registra el contenido de las planillas en logs.
 - No se muestran datos completos del archivo en la interfaz.
 - Los archivos reales de pozos no deben incluirse en el repositorio.

@@ -3,14 +3,17 @@ from __future__ import annotations
 from io import BytesIO
 import os
 from pathlib import Path
+from zipfile import ZipFile
 
 from openpyxl import Workbook, load_workbook
 import pytest
 
 from processor import (
+    GeneratedPackage,
     InvalidWorkbookError,
     analyze_workbook,
     generate_finished_workbook,
+    process_uploaded_package,
     process_uploaded_workbook,
 )
 
@@ -162,6 +165,43 @@ def test_empty_survey_is_rejected():
         analyze_workbook(data, "pozo.xlsx")
 
 
+def test_optional_survey_displacements_are_preserved_for_visualization():
+    workbook = load_workbook(BytesIO(make_source_workbook(survey_rows=2)))
+    survey = workbook["Survey"]
+    survey["E2"] = "DX"
+    survey["F2"] = "DY"
+    survey["E4"] = 12.345
+    survey["F4"] = 67.891
+    survey["E5"] = 20.0
+    survey["F5"] = 80.0
+
+    result = analyze_workbook(_xlsx_bytes(workbook), "pozo.xlsx")
+
+    assert result.survey[0].dx == 12.35
+    assert result.survey[0].dy == 67.89
+
+
+def test_alternative_spanish_survey_headers_are_detected():
+    workbook = load_workbook(BytesIO(make_source_workbook(survey_rows=2)))
+    survey = workbook["Survey"]
+    survey["A2"] = "Prof [m]"
+    survey["B2"] = "Desviac. Vert [°]"
+    survey["C2"] = "Azimuth [°]"
+    survey["D2"] = "Pfv [m]"
+    survey["E2"] = "Dis NS [m]"
+    survey["F2"] = "Dis EO [m]"
+    survey["E4"] = 11.25
+    survey["F4"] = -4.75
+    survey["E5"] = 14.0
+    survey["F5"] = -8.0
+
+    result = analyze_workbook(_xlsx_bytes(workbook), "pozo.xlsx")
+
+    assert len(result.survey) == 2
+    assert result.survey[0].dx == -4.75
+    assert result.survey[0].dy == 11.25
+
+
 @pytest.mark.parametrize("base_header", ["Base Cluster MD (m)", "Fondo Cluster MD (m)"])
 def test_base_and_fondo_cluster_headers_are_detected(base_header: str):
     workbook = load_workbook(BytesIO(make_source_workbook(stage_count=1, survey_rows=2)))
@@ -172,6 +212,39 @@ def test_base_and_fondo_cluster_headers_are_detected(base_header: str):
     assert len(result.clusters) == 10
     assert result.clusters[0].base_md == 6021.1
     assert len(result.stages) == 1
+
+
+def test_tables_are_detected_when_sheet_names_change():
+    workbook = load_workbook(BytesIO(make_source_workbook(stage_count=2, survey_rows=2)))
+    workbook["Input"].title = "Plan de fractura"
+    workbook["Survey"].title = "Trayectoria direccional"
+    workbook["Punzados"].title = "Perforaciones propuestas"
+
+    result = analyze_workbook(_xlsx_bytes(workbook), "pozo.xlsx")
+
+    assert result.source_sheets == {
+        "Survey": "Trayectoria direccional (fila 2)",
+        "Punzados": "Perforaciones propuestas (fila 1)",
+        "Input": "Plan de fractura (fila 3)",
+    }
+
+
+def test_fracture_configs_are_inferred_when_input_table_is_missing():
+    workbook = load_workbook(BytesIO(make_source_workbook(stage_count=3, survey_rows=2)))
+    del workbook["Input"]
+
+    result = analyze_workbook(_xlsx_bytes(workbook), "LLL-2000.xlsx")
+
+    assert result.well_name == "LLL-2000"
+    assert len(result.fracture_configs) == 1
+    inferred = result.fracture_configs[0]
+    assert (inferred.start_stage, inferred.end_stage, inferred.clusters, inferred.spf) == (
+        1,
+        3,
+        10,
+        4,
+    )
+    assert any("se infirió" in warning for warning in result.warnings)
 
 
 def test_empty_punzados_is_rejected():
@@ -284,51 +357,34 @@ def test_wellbore_has_two_rows_per_stage_in_reverse_order():
     assert sheet.cell(8, 19).value == result.stages[0].top_md
 
 
-def test_smart_staging_is_sorted_by_stage_descending():
+def test_smart_staging_and_wellbore_keep_published_sort_order():
     data = make_source_workbook(
         stage_count=3,
         stage_top_md={1: 7000, 2: 6500, 3: 6800},
     )
-    result = analyze_workbook(data, "pozo.xlsx")
-    generated = generate_finished_workbook(result, TEMPLATE)
+    generated = process_uploaded_workbook(data, "pozo.xlsx", TEMPLATE)
     sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
 
     assert [sheet.cell(row, 13).value for row in range(4, 7)] == [3, 2, 1]
     assert [sheet.cell(row, 14).value for row in range(4, 7)] == [6800, 6500, 7000]
-
-
-def test_wellbore_ifs_is_sorted_by_top_md_descending():
-    data = make_source_workbook(
-        stage_count=3,
-        stage_top_md={1: 7000, 2: 6500, 3: 6800},
-    )
-    result = analyze_workbook(data, "pozo.xlsx")
-    generated = generate_finished_workbook(result, TEMPLATE)
-    sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
-
-    top_values = [
-        sheet.cell(row, 19).value
-        for row in range(4, 4 + result.wellbore_row_count)
+    assert [sheet.cell(row, 19).value for row in range(4, 10)] == [
+        7000, 7000, 6800, 6800, 6500, 6500,
     ]
 
-    assert top_values == [7000, 7000, 6800, 6800, 6500, 6500]
 
-
-def test_survey_txt_and_csv_have_md_inclination_and_azimuth_columns():
+def test_survey_txt_and_csv_match_published_columns():
     data = make_source_workbook(stage_count=2, survey_rows=3)
     generated = process_uploaded_workbook(data, "pozo.xlsm", TEMPLATE)
-    txt_lines = generated.survey_txt_data.decode("utf-8").splitlines()
-    csv_lines = generated.survey_csv_data.decode("utf-8").splitlines()
 
     assert generated.survey_txt_filename == "LajE-32h_survey_md_inclination_azimuth.txt"
     assert generated.survey_csv_filename == "LajE-32h_survey_md_inclination_azimuth.csv"
-    assert txt_lines == [
+    assert generated.survey_txt_data.decode("utf-8").splitlines() == [
         "MD\tINCLINATION\tAZIMUTH",
         "1000\t80\t120",
         "1010\t80.1\t120.2",
         "1020\t80.2\t120.4",
     ]
-    assert csv_lines == [
+    assert generated.survey_csv_data.decode("utf-8").splitlines() == [
         "MD,INCLINATION,AZIMUTH",
         "1000,80,120",
         "1010,80.1,120.2",
@@ -356,34 +412,89 @@ def test_generated_xlsx_integrity_and_formula_error_scan():
     assert "Archivo .xlsx verificado con openpyxl" in generated.result.checks
 
 
-def test_generated_numeric_cells_do_not_keep_template_decimal_format():
+def test_zip_package_generates_one_output_per_compatible_workbook():
+    package_bytes = BytesIO()
+    unrelated = Workbook()
+    unrelated.active.title = "Notas"
+    unrelated.active["A1"] = "Documento auxiliar"
+    with ZipFile(package_bytes, "w") as package:
+        package.writestr(
+            "pozos/LLL-1.xlsx",
+            make_source_workbook(well_name="LLL-1", stage_count=2, survey_rows=3),
+        )
+        package.writestr(
+            "pozos/LLL-2.xlsm",
+            make_source_workbook(well_name="LLL-2", stage_count=3, survey_rows=4),
+        )
+        package.writestr(
+            "pozos/LLL-3-incompleto.xlsx",
+            make_source_workbook(
+                well_name="LLL-3",
+                stage_count=2,
+                stage_numbers=[1],
+                survey_rows=3,
+            ),
+        )
+        package.writestr("documentacion/notas.xlsx", _xlsx_bytes(unrelated))
+        package.writestr("mapa.png", b"not needed")
+
+    generated = process_uploaded_package(
+        package_bytes.getvalue(),
+        "PAD nuevo.zip",
+        TEMPLATE,
+    )
+
+    assert isinstance(generated, GeneratedPackage)
+    assert generated.processed_count == 2
+    assert generated.issue_count == 2
+    assert generated.failed_count == 1
+    assert generated.ignored_count == 1
+    assert generated.output_filename == "PAD-nuevo_terminados.zip"
+    with ZipFile(BytesIO(generated.data)) as output:
+        names = set(output.namelist())
+        assert names == {
+            "LLL-1_datos_terminados.xlsx",
+            "LLL-1_survey_md_inclination_azimuth.txt",
+            "LLL-1_survey_md_inclination_azimuth.csv",
+            "LLL-2_datos_terminados.xlsx",
+            "LLL-2_survey_md_inclination_azimuth.txt",
+            "LLL-2_survey_md_inclination_azimuth.csv",
+            "RESUMEN_PROCESAMIENTO.txt",
+        }
+        summary = output.read("RESUMEN_PROCESAMIENTO.txt").decode("utf-8")
+        assert "Archivos generados: 2" in summary
+        assert "Archivos con error: 1" in summary
+        assert "LLL-3-incompleto.xlsx" in summary
+        assert "notas.xlsx" in summary
+
+
+def test_generated_numeric_outputs_use_expected_number_formats():
     data = make_source_workbook(stage_count=3, survey_rows=5)
     generated = process_uploaded_workbook(data, "pozo.xlsm", TEMPLATE)
-    workbook = load_workbook(BytesIO(generated.data), data_only=False)
-    sheet = workbook["Datos terminados"]
+    sheet = load_workbook(BytesIO(generated.data), data_only=False)["Datos terminados"]
 
-    plain_numeric_cells = [
-        "H4",
-        "I4",
-        "J4",
-        "K4",
-        "N4",
-        "O4",
-        "P4",
-        "S4",
-        "T4",
-    ]
-    integer_cells = ["B3", "C3", "D3", "E3", "M4"]
+    numeric_ranges = (
+        (3, 2 + len(generated.result.fracture_configs), 2, 5, "0"),
+        (4, 3 + len(generated.result.survey), 8, 11, "General"),
+        (4, 3 + len(generated.result.stages), 13, 13, "0"),
+        (4, 3 + len(generated.result.stages), 14, 16, "General"),
+        (4, 3 + generated.result.wellbore_row_count, 19, 20, "General"),
+    )
+    for min_row, max_row, min_col, max_col, expected_format in numeric_ranges:
+        for row in sheet.iter_rows(
+            min_row=min_row,
+            max_row=max_row,
+            min_col=min_col,
+            max_col=max_col,
+        ):
+            for cell in row:
+                assert isinstance(cell.value, (int, float))
+                assert cell.number_format == expected_format
 
-    for coordinate in plain_numeric_cells:
-        cell = sheet[coordinate]
-        assert isinstance(cell.value, (int, float))
-        assert cell.number_format == "General"
-
-    for coordinate in integer_cells:
-        cell = sheet[coordinate]
-        assert isinstance(cell.value, int)
-        assert cell.number_format == "0"
+    assert sheet["M4"].value == 3
+    assert sheet["M4"].number_format == "0"
+    assert sheet["N4"].number_format == "General"
+    assert sheet["P4"].number_format == "General"
 
 
 def test_duplicate_cluster_numbers_are_rejected():
