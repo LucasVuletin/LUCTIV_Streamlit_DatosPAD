@@ -99,3 +99,7 @@ def test_well_figure_contains_path_interval_stages_and_surface() -> None:
     assert [row[0] for row in stages_trace.customdata] == [1, 2]
     assert figure.layout.scene.zaxis.autorange == "reversed"
     assert figure.layout.height == 485
+    assert figure.layout.title.text is None
+    assert figure.layout.margin.t >= 90
+    assert figure.layout.legend.orientation == "h"
+    assert figure.data[1].line.color == "#CC0000"

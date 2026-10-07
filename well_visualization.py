@@ -207,7 +207,7 @@ def build_well_figure(
             z=[point.tvd for point in trajectory],
             mode="lines",
             name="Trayectoria Survey",
-            line={"color": "#6B7E8C", "width": 5},
+            line={"color": "#626262", "width": 5},
             customdata=hover,
             hovertemplate=(
                 "<b>Survey</b><br>MD %{customdata[0]:,.1f} m"
@@ -229,7 +229,7 @@ def build_well_figure(
                 z=[point.tvd for point in stimulated],
                 mode="lines",
                 name="Intervalo estimulado",
-                line={"color": "#55BED2", "width": 10},
+                line={"color": "#CC0000", "width": 10},
                 hoverinfo="skip",
             )
         )
@@ -252,7 +252,11 @@ def build_well_figure(
                 marker={
                     "size": 5,
                     "color": [stage.stage for stage in result.stages],
-                    "colorscale": "Turbo",
+                    "colorscale": [
+                        [0, "#681414"],
+                        [0.5, "#CC0000"],
+                        [1, "#F19A9A"],
+                    ],
                     "showscale": True,
                     "colorbar": {
                         "title": "Etapa",
@@ -280,20 +284,15 @@ def build_well_figure(
             name="Superficie",
             text=["Superficie"],
             textposition="top center",
-            marker={"size": 7, "color": "#1677A3", "symbol": "diamond"},
+            marker={"size": 7, "color": "#202020", "symbol": "diamond"},
             hovertemplate="<b>Superficie</b><extra></extra>",
         )
     )
 
     figure.update_layout(
         height=height,
-        margin={"l": 0, "r": 0, "t": 44, "b": 0},
-        title={
-            "text": "Trayectoria 3D · pozo completo",
-            "x": 0.01,
-            "xanchor": "left",
-            "font": {"size": 16},
-        },
+        margin={"l": 0, "r": 0, "t": 102, "b": 0},
+        font={"color": "#202020"},
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         legend={
@@ -301,7 +300,9 @@ def build_well_figure(
             "yanchor": "bottom",
             "y": 1.01,
             "x": 0,
-            "font": {"size": 10},
+            "entrywidth": 135,
+            "entrywidthmode": "pixels",
+            "font": {"size": 11, "color": "#202020"},
         },
         scene={
             "xaxis": {"title": "Desplazamiento X (m)", "showbackground": False},

@@ -31,24 +31,26 @@ st.markdown(
     """
     <style>
     :root {
-        --luctiv-ink: #13202B;
-        --luctiv-blue: #1677A3;
-        --luctiv-cyan: #55BED2;
-        --luctiv-soft: #EFF8FA;
-        --luctiv-border: #D8E6EA;
+        --luctiv-ink: #202020;
+        --luctiv-red: #CC0000;
+        --luctiv-red-dark: #A80000;
+        --luctiv-soft: #F7F7F7;
+        --luctiv-border: #E0E0E0;
+        --luctiv-muted: #5B5B5B;
     }
-    .stApp { background: linear-gradient(180deg, #F7FBFC 0%, #FFFFFF 36%); }
+    .stApp { background: linear-gradient(180deg, #F7F7F7 0%, #FFFFFF 36%); }
     .block-container { max-width: 1180px; padding-top: 2.4rem; padding-bottom: 3rem; }
     .luctiv-hero {
         border: 1px solid var(--luctiv-border);
+        border-left: 6px solid var(--luctiv-red);
         border-radius: 22px;
         padding: 2rem 2.1rem;
         background: rgba(255,255,255,0.94);
-        box-shadow: 0 18px 48px rgba(21, 66, 83, 0.08);
+        box-shadow: 0 18px 48px rgba(32, 32, 32, 0.06);
         margin-bottom: 1.4rem;
     }
     .luctiv-kicker {
-        color: var(--luctiv-blue);
+        color: var(--luctiv-red);
         font-size: 0.82rem;
         letter-spacing: 0.18em;
         font-weight: 800;
@@ -63,14 +65,14 @@ st.markdown(
         margin: 0;
     }
     .luctiv-subtitle {
-        color: #526672;
+        color: var(--luctiv-muted);
         max-width: 680px;
         font-size: 1.04rem;
         margin: 1rem 0 0 0;
         line-height: 1.6;
     }
     div[data-testid="stFileUploader"] {
-        border: 1px dashed #8BC8D5;
+        border: 1px dashed #C75C5C;
         border-radius: 18px;
         padding: 0.45rem 0.75rem 0.15rem;
         background: var(--luctiv-soft);
@@ -82,7 +84,12 @@ st.markdown(
         border: none;
     }
     div.stButton > button[kind="primary"], div.stDownloadButton > button {
-        background: linear-gradient(135deg, var(--luctiv-blue), var(--luctiv-cyan));
+        background: var(--luctiv-red);
+        color: white;
+    }
+    div.stButton > button[kind="primary"]:hover,
+    div.stDownloadButton > button:hover {
+        background: var(--luctiv-red-dark);
         color: white;
     }
     .luctiv-flow {
@@ -103,11 +110,11 @@ st.markdown(
     }
     .luctiv-flow-step span {
         display: inline-block;
-        color: #16835B;
+        color: var(--luctiv-red);
         margin-right: 0.3rem;
     }
     .luctiv-note {
-        color: #617581;
+        color: var(--luctiv-muted);
         font-size: 0.86rem;
         border-top: 1px solid var(--luctiv-border);
         padding-top: 1rem;
@@ -127,7 +134,7 @@ st.markdown(
         margin: 0;
     }
     .luctiv-result-heading p {
-        color: #617581;
+        color: var(--luctiv-muted);
         font-size: 0.78rem;
         margin: 0.28rem 0 0;
     }
@@ -138,12 +145,12 @@ st.markdown(
     }
     .luctiv-kpi {
         min-width: 0;
-        border-left: 3px solid var(--luctiv-cyan);
-        background: rgba(239, 248, 250, 0.84);
+        border-left: 3px solid var(--luctiv-red);
+        background: var(--luctiv-soft);
         padding: 0.42rem 0.62rem;
     }
     .luctiv-kpi-label {
-        color: #617581;
+        color: var(--luctiv-muted);
         font-size: 0.66rem;
         letter-spacing: 0.04em;
         text-transform: uppercase;
@@ -179,7 +186,7 @@ st.markdown(
         min-width: 0;
     }
     .luctiv-summary-label {
-        color: #617581;
+        color: var(--luctiv-muted);
         font-size: 0.65rem;
         text-transform: uppercase;
         letter-spacing: 0.04em;
@@ -199,7 +206,7 @@ st.markdown(
         display: flex;
         align-items: center;
         gap: 0.4rem;
-        color: #526672;
+        color: var(--luctiv-muted);
         font-size: 0.74rem;
         padding: 0.2rem 0;
     }
@@ -207,14 +214,21 @@ st.markdown(
         width: 0.48rem;
         height: 0.48rem;
         border-radius: 50%;
-        background: #16835B;
+        background: var(--luctiv-red);
         flex: 0 0 auto;
     }
     .luctiv-source-note {
-        color: #617581;
+        color: var(--luctiv-muted);
         font-size: 0.7rem;
         line-height: 1.35;
         margin: 0.65rem 0 0;
+    }
+    .luctiv-chart-heading {
+        color: var(--luctiv-ink);
+        font-size: 1.05rem;
+        font-weight: 750;
+        line-height: 1.35;
+        margin: 0.45rem 0 0;
     }
     @media (max-width: 720px) {
         .luctiv-flow { grid-template-columns: 1fr; }
@@ -387,17 +401,19 @@ if has_cached_result:
     st.markdown(
         """
         <style>
-        [data-testid="stAppViewContainer"] { overflow: hidden; }
         .block-container {
             max-width: 100%;
-            height: 100vh;
-            overflow: hidden;
+            min-height: 100vh;
             padding: 2.2rem 1.15rem 0.15rem;
         }
         .block-container > div:first-child > div[data-testid="stVerticalBlock"] {
             gap: 0.34rem;
         }
-        div[data-testid="stPlotlyChart"] { margin-top: -0.2rem; }
+        div[data-testid="stPlotlyChart"] { margin-top: 0; }
+        @media (max-width: 900px) {
+            .luctiv-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .luctiv-summary { height: auto; padding-bottom: 1rem; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -569,6 +585,10 @@ if generated is not None and uploaded_file is not None:
 
     trajectory_col, summary_col = st.columns([2.75, 0.85], gap="small")
     with trajectory_col:
+        st.markdown(
+            '<div class="luctiv-chart-heading">Trayectoria 3D · pozo completo</div>',
+            unsafe_allow_html=True,
+        )
         figure, trajectory_source = build_well_figure(result, height=485)
         st.plotly_chart(
             figure,
