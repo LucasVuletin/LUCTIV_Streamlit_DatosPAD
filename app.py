@@ -11,6 +11,7 @@ from processor import (
     GeneratedPackage,
     InvalidWorkbookError,
     LuctivError,
+    ProcessingDecisionRequired,
     process_uploaded_package,
 )
 from well_visualization import build_well_figure, calculate_impact_metrics
@@ -523,39 +524,78 @@ if uploaded_file is not None:
         st.session_state["luctiv_upload_fingerprint"] = upload_fingerprint
         st.session_state.pop("luctiv_generated", None)
         st.session_state.pop("luctiv_elapsed_seconds", None)
+        st.session_state.pop("luctiv_pending_decision", None)
 else:
     uploaded_bytes = None
     upload_fingerprint = None
     st.session_state.pop("luctiv_upload_fingerprint", None)
     st.session_state.pop("luctiv_generated", None)
     st.session_state.pop("luctiv_elapsed_seconds", None)
+    st.session_state.pop("luctiv_pending_decision", None)
 
-if process_clicked and uploaded_file is not None:
-    with st.spinner("Analizando configuraciones, Survey y punzados…"):
-        started_at = perf_counter()
-        try:
+if process_clicked:
+    st.session_state.pop("luctiv_pending_decision", None)
+
+pending_decision = st.session_state.get("luctiv_pending_decision")
+accept_clicked = False
+if pending_decision and pending_decision["fingerprint"] == upload_fingerprint:
+    st.warning(
+        "Encontré diferencias entre las hojas. Revisá los datos antes de continuar:",
+        icon="⚠️",
+    )
+    for detail in pending_decision["details"]:
+        st.text(detail)
+    accept_col, cancel_col = st.columns(2)
+    with accept_col:
+        accept_clicked = st.button(
+            "Usar los datos verificados y continuar",
+            type="primary",
+            use_container_width=True,
+            key="luctiv_accept_recoveries",
+        )
+    with cancel_col:
+        cancel_clicked = st.button(
+            "Cancelar y revisar el Excel",
+            use_container_width=True,
+            key="luctiv_cancel_recoveries",
+        )
+    if cancel_clicked:
+        st.session_state.pop("luctiv_pending_decision", None)
+        st.rerun()
+
+if (process_clicked or accept_clicked) and uploaded_file is not None:
+    started_at = perf_counter()
+    try:
+        with st.spinner("Analizando configuraciones, Survey y punzados…"):
             generated = process_uploaded_package(
                 file_bytes=uploaded_bytes,
                 filename=uploaded_file.name,
                 template_path=TEMPLATE_PATH,
+                accept_recoveries=accept_clicked,
             )
-        except InvalidWorkbookError as exc:
-            st.error(str(exc), icon="⛔")
-            st.stop()
-        except LuctivError as exc:
-            st.error(str(exc), icon="⛔")
-            st.stop()
-        except Exception:
-            st.error(
-                "Ocurrió un error inesperado al procesar el archivo. "
-                "Revisá que el Excel no esté dañado y que mantenga la estructura esperada.",
-                icon="⛔",
-            )
-            st.stop()
-
-        st.session_state["luctiv_generated"] = generated
-        st.session_state["luctiv_elapsed_seconds"] = perf_counter() - started_at
+    except ProcessingDecisionRequired as exc:
+        st.session_state["luctiv_pending_decision"] = {
+            "fingerprint": upload_fingerprint,
+            "details": exc.details,
+        }
         st.rerun()
+    except LuctivError as exc:
+        st.session_state.pop("luctiv_pending_decision", None)
+        st.error(str(exc), icon="⛔")
+        st.stop()
+    except Exception:
+        st.session_state.pop("luctiv_pending_decision", None)
+        st.error(
+            "Ocurrió un error inesperado al procesar el archivo. "
+            "Revisá que el Excel no esté dañado y que mantenga la estructura esperada.",
+            icon="⛔",
+        )
+        st.stop()
+
+    st.session_state["luctiv_generated"] = generated
+    st.session_state["luctiv_elapsed_seconds"] = perf_counter() - started_at
+    st.session_state.pop("luctiv_pending_decision", None)
+    st.rerun()
 
 generated = st.session_state.get("luctiv_generated")
 if generated is not None and uploaded_file is not None:

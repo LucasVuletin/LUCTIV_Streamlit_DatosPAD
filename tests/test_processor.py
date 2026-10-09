@@ -11,6 +11,7 @@ import pytest
 from processor import (
     GeneratedPackage,
     InvalidWorkbookError,
+    ProcessingDecisionRequired,
     analyze_workbook,
     generate_finished_workbook,
     process_uploaded_package,
@@ -202,6 +203,51 @@ def test_alternative_spanish_survey_headers_are_detected():
     assert result.survey[0].dy == 11.25
 
 
+def test_incomplete_survey_requires_confirmation_for_matching_report():
+    workbook = load_workbook(BytesIO(make_source_workbook(survey_rows=3)))
+    survey = workbook["Survey"]
+    report = workbook.create_sheet("Survey report")
+    for col, header in enumerate(("MD", "Inclination", "Azimuth", "TVD"), start=1):
+        report.cell(63, col, header)
+    for offset, source_row in enumerate(range(4, 7), start=65):
+        for col in range(1, 5):
+            report.cell(offset, col, survey.cell(source_row, col).value)
+        survey.cell(source_row, 2).value = None
+        survey.cell(source_row, 3).value = None
+
+    data = _xlsx_bytes(workbook)
+    with pytest.raises(ProcessingDecisionRequired) as pending:
+        process_uploaded_workbook(data, "pozo.xlsx", TEMPLATE)
+    assert any("Survey report" in detail for detail in pending.value.details)
+
+    generated = process_uploaded_workbook(
+        data, "pozo.xlsx", TEMPLATE, accept_recoveries=True
+    )
+    assert generated.result.source_sheets["Survey"] == "Survey report (fila 63)"
+    assert len(generated.result.survey) == 3
+
+
+def test_incomplete_survey_rejects_unrelated_report():
+    workbook = load_workbook(BytesIO(make_source_workbook(survey_rows=3)))
+    survey = workbook["Survey"]
+    report = workbook.create_sheet("Survey report")
+    report.append(["MD", "Inclination", "Azimuth", "TVD"])
+    for source_row in range(4, 7):
+        report.append(
+            [
+                survey.cell(source_row, 1).value,
+                survey.cell(source_row, 2).value,
+                survey.cell(source_row, 3).value,
+                survey.cell(source_row, 4).value + 100,
+            ]
+        )
+        survey.cell(source_row, 2).value = None
+        survey.cell(source_row, 3).value = None
+
+    with pytest.raises(InvalidWorkbookError, match="INCL"):
+        analyze_workbook(_xlsx_bytes(workbook), "pozo.xlsx")
+
+
 @pytest.mark.parametrize("base_header", ["Base Cluster MD (m)", "Fondo Cluster MD (m)"])
 def test_base_and_fondo_cluster_headers_are_detected(base_header: str):
     workbook = load_workbook(BytesIO(make_source_workbook(stage_count=1, survey_rows=2)))
@@ -266,6 +312,20 @@ def test_wrong_cluster_count_is_rejected():
 
     with pytest.raises(InvalidWorkbookError, match="se encontraron 8 clústeres"):
         analyze_workbook(data, "pozo.xlsx")
+
+
+def test_punzados_count_requires_confirmation_when_input_is_stale():
+    workbook = load_workbook(BytesIO(make_source_workbook(stage_count=2)))
+    workbook["Input"]["D4"] = 11
+    data = _xlsx_bytes(workbook)
+
+    with pytest.raises(ProcessingDecisionRequired) as pending:
+        analyze_workbook(data, "pozo.xlsx")
+    assert any("Punzados confirma 10" in detail for detail in pending.value.details)
+
+    result = analyze_workbook(data, "pozo.xlsx", accept_recoveries=True)
+    assert result.fracture_configs[0].clusters == 10
+    assert any("Se usó Punzados" in warning for warning in result.warnings)
 
 
 def test_wrong_spf_is_rejected():

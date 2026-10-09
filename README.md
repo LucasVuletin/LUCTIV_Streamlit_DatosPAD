@@ -13,8 +13,9 @@ También entrega el Survey en TXT y CSV. El usuario final solo necesita abrir la
 
 1. Cargar un archivo `.xlsm`, `.xlsx` o un ZIP de PAD.
 2. Presionar `Procesar archivo`.
-3. Revisar métricas, validaciones y advertencias.
-4. Descargar el Excel y el Survey TXT/CSV. Para un PAD, descargar el ZIP con los resultados y el resumen del lote.
+3. Si Survey está incompleto o Input y Punzados difieren, revisar los datos detectados y confirmar si se debe continuar.
+4. Revisar métricas, validaciones y advertencias.
+5. Descargar el Excel y el Survey TXT/CSV. Para un PAD, descargar el ZIP con los resultados y el resumen del lote.
 
 LUCTIV no ejecuta macros, no modifica el archivo original y procesa el contenido en memoria.
 
@@ -29,6 +30,7 @@ La aplicación localiza las tablas por sus encabezados, aunque las pestañas ten
 - `Punzados`
 
 Desde `Input`, LUCTIV detecta las configuraciones de fractura: rango de etapas, etapa inicial, etapa final, cantidad de clústeres y SPF. Si no hay tabla de configuración separada, las infiere desde Punzados y lo informa como advertencia.
+Cuando Input y Punzados difieren, solo ofrece continuar con Punzados si la cantidad declarada allí coincide con los clústeres reales de cada etapa.
 
 Desde `Survey`, genera las columnas:
 

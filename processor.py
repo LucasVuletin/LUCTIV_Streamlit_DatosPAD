@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 import math
 from pathlib import Path
@@ -68,6 +68,14 @@ class LuctivError(Exception):
 
 class InvalidWorkbookError(LuctivError):
     """Raised when the uploaded workbook does not match the expected structure."""
+
+
+class ProcessingDecisionRequired(LuctivError):
+    """A recoverable source discrepancy needs the user's choice before generating output."""
+
+    def __init__(self, details: Iterable[str]):
+        self.details = tuple(details)
+        super().__init__("Se encontraron diferencias entre las hojas del archivo.")
 
 
 @dataclass(frozen=True)
@@ -517,6 +525,62 @@ def _extract_survey(
     return survey
 
 
+def _survey_depth_pairs(sheet: Worksheet, header_row: int) -> set[tuple[float, float]]:
+    """Identify a survey by its measured and vertical depths, even if angles are blank."""
+    headers = {
+        cell.column: _normalize_text(cell.value)
+        for cell in sheet[header_row]
+        if cell.value is not None
+    }
+    col_md = _find_column(headers, SURVEY_HEADER_GROUPS[0])
+    col_tvd = _find_column(headers, SURVEY_HEADER_GROUPS[1])
+    pairs = set()
+    for row_idx in range(header_row + 1, sheet.max_row + 1):
+        md = _coerce_float(sheet.cell(row_idx, col_md).value)
+        tvd = _coerce_float(sheet.cell(row_idx, col_tvd).value)
+        if md is not None and tvd is not None:
+            pairs.add((round(md, 2), round(tvd, 2)))
+    return pairs
+
+
+def _matching_survey_source(
+    workbook: Workbook,
+    incomplete_sheet: Worksheet,
+    incomplete_header_row: int,
+) -> tuple[Worksheet, int, list[SurveyPoint]] | None:
+    """Use another complete survey only when its depths match the incomplete table."""
+    reference = _survey_depth_pairs(incomplete_sheet, incomplete_header_row)
+    if len(reference) < 2:
+        return None
+
+    matches = []
+    for sheet in workbook.worksheets:
+        if sheet is incomplete_sheet:
+            continue
+        try:
+            header_row = _find_header_row_by_alias_groups(
+                sheet, SURVEY_HEADER_GROUPS, max_scan_rows=100
+            )
+            points = _extract_survey(sheet, header_row)
+        except InvalidWorkbookError:
+            continue
+        candidate = {(point.md, point.tvd) for point in points}
+        overlap = len(reference & candidate)
+        if overlap >= 2 and overlap / len(reference) >= 0.95:
+            matches.append((overlap, sheet, header_row, points))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        names = ", ".join(f"'{item[1].title}'" for item in matches if item[0] == matches[0][0])
+        raise InvalidWorkbookError(
+            f"Hay varias hojas Survey completas que coinciden con '{incomplete_sheet.title}': {names}."
+        )
+    _, sheet, header_row, points = matches[0]
+    return sheet, header_row, points
+
+
 def _extract_clusters(
     sheet: Worksheet,
     header_row: int | None = None,
@@ -647,6 +711,41 @@ def _infer_fracture_configs(clusters: list[Cluster]) -> list[FractureConfig]:
             "No se pudo inferir la configuración de fractura desde los punzados."
         )
     return configs
+
+
+def _reconcile_fracture_configs(
+    configs: list[FractureConfig], clusters: list[Cluster]
+) -> tuple[list[FractureConfig], list[str], list[str]]:
+    """Trust Punzados counts only when its declared and actual counts agree."""
+    grouped: dict[int, list[Cluster]] = {}
+    for cluster in clusters:
+        grouped.setdefault(cluster.stage, []).append(cluster)
+
+    reconciled = []
+    warnings = []
+    decision_details = []
+    for config in configs:
+        counts = set()
+        for stage in range(config.start_stage, config.end_stage + 1):
+            stage_clusters = grouped.get(stage, [])
+            declared = {cluster.expected_clusters for cluster in stage_clusters}
+            if not stage_clusters or declared != {len(stage_clusters)}:
+                break
+            counts.add(len(stage_clusters))
+        else:
+            if len(counts) == 1:
+                actual_count = counts.pop()
+                if actual_count != config.clusters:
+                    detail = (
+                        f"Input, configuración '{config.label}': N° Cl indica "
+                        f"{config.clusters}, pero Punzados confirma {actual_count} "
+                        "clústeres por etapa."
+                    )
+                    decision_details.append(detail)
+                    warnings.append(f"{detail} Se usó Punzados.")
+                    config = replace(config, clusters=actual_count)
+        reconciled.append(config)
+    return reconciled, warnings, decision_details
 
 
 def _build_stages(
@@ -789,7 +888,12 @@ def _build_stages(
     return stages, warnings, checks
 
 
-def analyze_workbook(file_obj: bytes | BinaryIO, filename: str) -> ProcessingResult:
+def analyze_workbook(
+    file_obj: bytes | BinaryIO,
+    filename: str,
+    *,
+    accept_recoveries: bool = False,
+) -> ProcessingResult:
     stream = BytesIO(file_obj) if isinstance(file_obj, bytes) else file_obj
     try:
         workbook = load_workbook(
@@ -809,7 +913,7 @@ def analyze_workbook(file_obj: bytes | BinaryIO, filename: str) -> ProcessingRes
             workbook,
             "Survey",
             SURVEY_HEADER_GROUPS,
-            max_scan_rows=60,
+            max_scan_rows=100,
         )
         if survey_location is None:
             raise InvalidWorkbookError(
@@ -839,16 +943,45 @@ def analyze_workbook(file_obj: bytes | BinaryIO, filename: str) -> ProcessingRes
         clusters = _extract_clusters(cluster_sheet, cluster_header_row)
 
         inferred_configs = config_location is None
+        config_warnings: list[str] = []
+        decision_details: list[str] = []
         if config_location is None:
             configs = _infer_fracture_configs(clusters)
             well_name = Path(filename).stem.replace("_version2", "")
         else:
             config_sheet, config_header_row = config_location
             configs = _extract_fracture_configs(config_sheet, config_header_row)
+            configs, config_warnings, config_decisions = _reconcile_fracture_configs(
+                configs, clusters
+            )
+            decision_details.extend(config_decisions)
             well_name = _extract_well_name(config_sheet, filename)
 
-        survey = _extract_survey(survey_sheet, survey_header_row)
+        survey_source_warning = None
+        try:
+            survey = _extract_survey(survey_sheet, survey_header_row)
+        except InvalidWorkbookError:
+            matched_survey = _matching_survey_source(
+                workbook, survey_sheet, survey_header_row
+            )
+            if matched_survey is None:
+                raise
+            original_sheet_name = survey_sheet.title
+            survey_sheet, survey_header_row, survey = matched_survey
+            survey_source_warning = (
+                f"La hoja '{original_sheet_name}' tiene datos Survey incompletos; "
+                f"se usó '{survey_sheet.title}' porque coinciden MD y TVD."
+            )
+            decision_details.append(
+                f"La hoja '{original_sheet_name}' tiene datos Survey incompletos. "
+                f"'{survey_sheet.title}' contiene {len(survey)} registros y coincide en MD y TVD."
+            )
         stages, warnings, checks = _build_stages(clusters, configs)
+        if decision_details and not accept_recoveries:
+            raise ProcessingDecisionRequired(decision_details)
+        warnings[:0] = config_warnings
+        if survey_source_warning:
+            warnings.insert(0, survey_source_warning)
         if inferred_configs:
             warnings.insert(
                 0,
@@ -1142,10 +1275,14 @@ def process_uploaded_workbook(
     file_bytes: bytes,
     filename: str,
     template_path: str | Path,
+    *,
+    accept_recoveries: bool = False,
 ) -> GeneratedWorkbook:
     if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise InvalidWorkbookError("LUCTIV solo acepta archivos Excel .xlsm o .xlsx.")
-    result = analyze_workbook(file_bytes, filename)
+    result = analyze_workbook(
+        file_bytes, filename, accept_recoveries=accept_recoveries
+    )
     return generate_finished_workbook(result, template_path)
 
 
@@ -1223,7 +1360,7 @@ def _looks_like_single_well_workbook(file_bytes: bytes) -> bool:
             workbook,
             "Survey",
             SURVEY_HEADER_GROUPS,
-            max_scan_rows=60,
+            max_scan_rows=100,
         )
         cluster_location = _locate_table(
             workbook,
@@ -1242,11 +1379,15 @@ def process_uploaded_package(
     file_bytes: bytes,
     filename: str,
     template_path: str | Path,
+    *,
+    accept_recoveries: bool = False,
 ) -> GeneratedWorkbook | GeneratedPackage:
     """Process either one workbook or every compatible workbook inside a ZIP package."""
     suffix = Path(filename).suffix.lower()
     if suffix in ALLOWED_EXTENSIONS:
-        return process_uploaded_workbook(file_bytes, filename, template_path)
+        return process_uploaded_workbook(
+            file_bytes, filename, template_path, accept_recoveries=accept_recoveries
+        )
     if suffix != ".zip":
         raise InvalidWorkbookError(
             "LUCTIV solo acepta archivos Excel .xlsm/.xlsx o un paquete .zip."
@@ -1259,6 +1400,7 @@ def process_uploaded_package(
 
     workbooks: list[PackageWorkbook] = []
     issues: list[PackageIssue] = []
+    decision_details: list[str] = []
     try:
         excel_entries = [
             info
@@ -1303,7 +1445,13 @@ def process_uploaded_package(
                     contents,
                     member_filename,
                     template_path,
+                    accept_recoveries=accept_recoveries,
                 )
+            except ProcessingDecisionRequired as exc:
+                decision_details.extend(
+                    f"{member_filename}: {detail}" for detail in exc.details
+                )
+                continue
             except (InvalidWorkbookError, LuctivError, BadZipFile, RuntimeError) as exc:
                 category = (
                     "error"
@@ -1315,6 +1463,9 @@ def process_uploaded_package(
             workbooks.append(PackageWorkbook(member_filename, generated))
     finally:
         source_archive.close()
+
+    if decision_details:
+        raise ProcessingDecisionRequired(decision_details)
 
     if not workbooks:
         details = "; ".join(
