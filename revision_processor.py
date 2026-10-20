@@ -412,8 +412,16 @@ def process_combined_revision(
     """Compare a revised fracplan containing the pasted DATOS PAD tabs."""
     if Path(source_filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise InvalidWorkbookError(f"{source_filename}: se requiere un Excel .xlsm o .xlsx.")
-    result = analyze_workbook(source_bytes, source_filename,
-                              accept_recoveries=accept_recoveries)
+    try:
+        result = analyze_workbook(source_bytes, source_filename,
+                                  accept_recoveries=accept_recoveries,
+                                  prefer_punzados=True)
+    except ProcessingDecisionRequired as exc:
+        raise ProcessingDecisionRequired(
+            [f"{source_filename}: {detail}" for detail in exc.details]
+        ) from exc
+    except InvalidWorkbookError as exc:
+        raise InvalidWorkbookError(f"{source_filename}: {exc}") from exc
     result.output_filename = _safe_output_filename(result.well_name).removesuffix(".xlsx") + "_actualizado.xlsx"
     result.source_sheets = {
         name: f"{source_filename}: {location}"
