@@ -283,6 +283,7 @@ if mode == "Actualizar y comparar":
     clicked = st.button("Actualizar y comparar", type="primary", disabled=not ready)
     if clicked:
         st.session_state.pop("revision_decision", None)
+        st.session_state.pop("revision_generated", None)
     pending = st.session_state.get("revision_decision")
     accepted = False
     if pending and pending["fingerprint"] == fingerprint:
@@ -306,6 +307,7 @@ if mode == "Actualizar y comparar":
                     accept_recoveries=accepted,
                 )
         except ProcessingDecisionRequired as exc:
+            st.session_state.pop("revision_generated", None)
             st.session_state["revision_decision"] = {
                 "fingerprint": fingerprint, "details": exc.details,
             }
