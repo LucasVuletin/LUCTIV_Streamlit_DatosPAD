@@ -287,10 +287,10 @@ if mode == "Actualizar y comparar":
     pending = st.session_state.get("revision_decision")
     accepted = False
     if pending and pending["fingerprint"] == fingerprint:
-        st.warning("Hay datos contradictorios en el fracplan nuevo. Revisá dónde están y decidí si querés continuar.")
+        st.warning("Hay datos contradictorios o incompletos en el fracplan nuevo. Revisá dónde están y decidí si querés continuar.")
         for detail in pending["details"]:
             st.write(f"• {detail}")
-        st.caption("Si continuás, el Excel actualizado tomará la cantidad de clústeres y el SPF de las filas de Punzados indicadas arriba.")
+        st.caption("Si continuás, el Excel actualizado tomará clústeres y SPF de Punzados y completará las configuraciones que falten en Input.")
         accepted = st.button("Continuar con los clústeres encontrados", type="primary")
         if st.button("No continuar; revisar los Excel"):
             st.session_state.pop("revision_decision", None)
