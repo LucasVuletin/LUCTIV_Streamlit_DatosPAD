@@ -748,9 +748,58 @@ def _reconcile_fracture_configs(
     return reconciled, warnings, decision_details
 
 
+def _configs_from_punzados(
+    configs: list[FractureConfig],
+    clusters: list[Cluster],
+    filename: str,
+    config_sheet_name: str,
+    cluster_sheet_name: str,
+) -> tuple[list[FractureConfig], list[str]]:
+    """Use the actual per-stage count and SPF for an updated fracplan."""
+    grouped: dict[int, list[Cluster]] = {}
+    for cluster in clusters:
+        grouped.setdefault(cluster.stage, []).append(cluster)
+
+    effective: list[FractureConfig] = []
+    warnings: list[str] = []
+    for config in configs:
+        stages = [grouped.get(stage, []) for stage in range(config.start_stage, config.end_stage + 1)]
+        if not stages or any(not stage_clusters or len({item.spf for item in stage_clusters}) != 1
+                             for stage_clusters in stages):
+            effective.append(config)
+            continue  # _build_stages reports missing stages or inconsistent SPF.
+
+        actual = [(len(stage_clusters), stage_clusters[0].spf) for stage_clusters in stages]
+        for stage_number, (count, spf) in zip(range(config.start_stage, config.end_stage + 1), actual):
+            if count != config.clusters:
+                warnings.append(
+                    f"{filename}, hoja '{cluster_sheet_name}', etapa {stage_number}: "
+                    f"se encontraron {count} clústeres; hoja '{config_sheet_name}', "
+                    f"configuración '{config.label}' indica {config.clusters}. "
+                    f"Se usan los {count} clústeres presentes en Punzados."
+                )
+            if spf != config.spf:
+                warnings.append(
+                    f"{filename}, hoja '{cluster_sheet_name}', etapa {stage_number}: "
+                    f"SPF es {spf}; hoja '{config_sheet_name}', configuración "
+                    f"'{config.label}' indica {config.spf}. Se usa SPF de Punzados."
+                )
+
+        if len(set(actual)) == 1:
+            count, spf = actual[0]
+            effective.append(replace(config, clusters=count, spf=spf))
+        else:
+            config_clusters = [item for stage_clusters in stages for item in stage_clusters]
+            effective.extend(_infer_fracture_configs(config_clusters))
+    return effective, warnings
+
+
 def _build_stages(
     clusters: list[Cluster],
     configs: list[FractureConfig],
+    *,
+    prefer_punzados: bool = False,
+    source_label: str = "Punzados",
 ) -> tuple[list[StageInterval], list[str], list[str]]:
     grouped: dict[int, list[Cluster]] = {}
     for cluster in clusters:
@@ -804,14 +853,20 @@ def _build_stages(
         }
 
         if len(expected_counts) > 1:
-            raise InvalidWorkbookError(
-                f"Etapa {stage_number}: la cantidad esperada de clústeres no es consistente."
-            )
-        if expected_counts and len(stage_clusters) != next(iter(expected_counts)):
-            raise InvalidWorkbookError(
+            detail = f"Etapa {stage_number}: la cantidad esperada de clústeres no es consistente."
+            if prefer_punzados:
+                warnings.append(f"{source_label}: {detail} Se usan {len(stage_clusters)} clústeres encontrados.")
+            else:
+                raise InvalidWorkbookError(detail)
+        elif expected_counts and len(stage_clusters) != next(iter(expected_counts)):
+            detail = (
                 f"Etapa {stage_number}: se encontraron {len(stage_clusters)} clústeres "
                 f"y se esperaban {next(iter(expected_counts))} según Punzados."
             )
+            if prefer_punzados:
+                warnings.append(f"{source_label}: {detail} Se usan los clústeres encontrados.")
+            else:
+                raise InvalidWorkbookError(detail)
         if len(spfs) != 1:
             raise InvalidWorkbookError(f"Etapa {stage_number}: hay valores SPF inconsistentes.")
         if len(stage_lengths) != 1:
@@ -880,7 +935,8 @@ def _build_stages(
         [
             f"{len(stages)} etapas consecutivas",
             f"{len(clusters)} clústeres procesados",
-            "Cantidad de clústeres por etapa correcta",
+            "Cantidad de clústeres por etapa obtenida de Punzados" if prefer_punzados
+            else "Cantidad de clústeres por etapa correcta",
             "SPF consistente con las configuraciones",
             f"{len(configs)} configuraciones de fractura",
         ]
@@ -893,6 +949,7 @@ def analyze_workbook(
     filename: str,
     *,
     accept_recoveries: bool = False,
+    prefer_punzados: bool = False,
 ) -> ProcessingResult:
     stream = BytesIO(file_obj) if isinstance(file_obj, bytes) else file_obj
     try:
@@ -951,10 +1008,15 @@ def analyze_workbook(
         else:
             config_sheet, config_header_row = config_location
             configs = _extract_fracture_configs(config_sheet, config_header_row)
-            configs, config_warnings, config_decisions = _reconcile_fracture_configs(
-                configs, clusters
-            )
-            decision_details.extend(config_decisions)
+            if prefer_punzados:
+                configs, config_warnings = _configs_from_punzados(
+                    configs, clusters, filename, config_sheet.title, cluster_sheet.title
+                )
+            else:
+                configs, config_warnings, config_decisions = _reconcile_fracture_configs(
+                    configs, clusters
+                )
+                decision_details.extend(config_decisions)
             well_name = _extract_well_name(config_sheet, filename)
 
         survey_source_warning = None
@@ -976,7 +1038,10 @@ def analyze_workbook(
                 f"La hoja '{original_sheet_name}' tiene datos Survey incompletos. "
                 f"'{survey_sheet.title}' contiene {len(survey)} registros y coincide en MD y TVD."
             )
-        stages, warnings, checks = _build_stages(clusters, configs)
+        stages, warnings, checks = _build_stages(
+            clusters, configs, prefer_punzados=prefer_punzados,
+            source_label=f"{filename}, hoja '{cluster_sheet.title}'",
+        )
         if decision_details and not accept_recoveries:
             raise ProcessingDecisionRequired(decision_details)
         warnings[:0] = config_warnings
