@@ -286,11 +286,12 @@ if mode == "Actualizar y comparar":
     pending = st.session_state.get("revision_decision")
     accepted = False
     if pending and pending["fingerprint"] == fingerprint:
-        st.warning("Revisá estas diferencias entre las fuentes antes de continuar:")
+        st.warning("Hay datos contradictorios en el fracplan nuevo. Revisá dónde están y decidí si querés continuar.")
         for detail in pending["details"]:
             st.write(f"• {detail}")
-        accepted = st.button("Usar los datos verificados y continuar", type="primary")
-        if st.button("Cancelar y revisar los Excel"):
+        st.caption("Si continuás, el Excel actualizado tomará la cantidad de clústeres y el SPF de las filas de Punzados indicadas arriba.")
+        accepted = st.button("Continuar con los clústeres encontrados", type="primary")
+        if st.button("No continuar; revisar los Excel"):
             st.session_state.pop("revision_decision", None)
             st.rerun()
     if (clicked or accepted) and ready:
