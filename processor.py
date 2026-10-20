@@ -85,6 +85,8 @@ class FractureConfig:
     end_stage: int
     clusters: int
     spf: int
+    source_count_cell: str | None = None
+    source_spf_cell: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,7 @@ class Cluster:
     expected_clusters: int | None = None
     stage_length: float | None = None
     override_note: str | None = None
+    source_row: int | None = None
 
 
 @dataclass(frozen=True)
@@ -451,6 +454,8 @@ def _extract_fracture_configs(
                 end_stage=_as_int(end, "Fin", row_idx),
                 clusters=_as_int(sheet.cell(row_idx, col_clusters).value, "N° Cl", row_idx),
                 spf=_as_int(sheet.cell(row_idx, col_spf).value, "SPF", row_idx),
+                source_count_cell=sheet.cell(row_idx, col_clusters).coordinate,
+                source_spf_cell=sheet.cell(row_idx, col_spf).coordinate,
             )
         )
 
@@ -642,6 +647,7 @@ def _extract_clusters(
                     else None
                 ),
                 override_note=(str(override_value).strip() if override_value not in (None, "") else None),
+                source_row=row_idx,
             )
         )
 
@@ -751,17 +757,13 @@ def _reconcile_fracture_configs(
 def _configs_from_punzados(
     configs: list[FractureConfig],
     clusters: list[Cluster],
-    filename: str,
-    config_sheet_name: str,
-    cluster_sheet_name: str,
-) -> tuple[list[FractureConfig], list[str]]:
+) -> list[FractureConfig]:
     """Use the actual per-stage count and SPF for an updated fracplan."""
     grouped: dict[int, list[Cluster]] = {}
     for cluster in clusters:
         grouped.setdefault(cluster.stage, []).append(cluster)
 
     effective: list[FractureConfig] = []
-    warnings: list[str] = []
     for config in configs:
         stages = [grouped.get(stage, []) for stage in range(config.start_stage, config.end_stage + 1)]
         if not stages or any(not stage_clusters or len({item.spf for item in stage_clusters}) != 1
@@ -770,28 +772,65 @@ def _configs_from_punzados(
             continue  # _build_stages reports missing stages or inconsistent SPF.
 
         actual = [(len(stage_clusters), stage_clusters[0].spf) for stage_clusters in stages]
-        for stage_number, (count, spf) in zip(range(config.start_stage, config.end_stage + 1), actual):
-            if count != config.clusters:
-                warnings.append(
-                    f"{filename}, hoja '{cluster_sheet_name}', etapa {stage_number}: "
-                    f"se encontraron {count} clústeres; hoja '{config_sheet_name}', "
-                    f"configuración '{config.label}' indica {config.clusters}. "
-                    f"Se usan los {count} clústeres presentes en Punzados."
-                )
-            if spf != config.spf:
-                warnings.append(
-                    f"{filename}, hoja '{cluster_sheet_name}', etapa {stage_number}: "
-                    f"SPF es {spf}; hoja '{config_sheet_name}', configuración "
-                    f"'{config.label}' indica {config.spf}. Se usa SPF de Punzados."
-                )
-
         if len(set(actual)) == 1:
             count, spf = actual[0]
             effective.append(replace(config, clusters=count, spf=spf))
         else:
             config_clusters = [item for stage_clusters in stages for item in stage_clusters]
             effective.extend(_infer_fracture_configs(config_clusters))
-    return effective, warnings
+    return effective
+
+
+def _source_discrepancies(
+    configs: list[FractureConfig],
+    clusters: list[Cluster],
+    filename: str,
+    cluster_sheet_name: str,
+    config_sheet_name: str | None = None,
+) -> list[str]:
+    """Describe recoverable differences with the source cells and affected rows."""
+    grouped: dict[int, list[Cluster]] = {}
+    for cluster in clusters:
+        grouped.setdefault(cluster.stage, []).append(cluster)
+
+    details: list[str] = []
+    for stage_number, stage_clusters in sorted(grouped.items()):
+        count = len(stage_clusters)
+        rows = sorted(item.source_row for item in stage_clusters if item.source_row is not None)
+        row_location = (
+            f"fila {rows[0]}" if len(rows) == 1 else f"filas {rows[0]} a {rows[-1]}"
+        ) if rows else "filas de la etapa"
+        config = next((item for item in configs
+                       if item.start_stage <= stage_number <= item.end_stage), None)
+        declared = {item.expected_clusters for item in stage_clusters
+                    if item.expected_clusters is not None}
+        differences: list[str] = []
+        if config is not None and count != config.clusters:
+            cell = config.source_count_cell or "N° Cl"
+            differences.append(
+                f"'{config_sheet_name}'!{cell} indica {config.clusters} clústeres"
+            )
+        if declared and declared != {count}:
+            values = ", ".join(str(value) for value in sorted(declared))
+            differences.append(
+                f"la columna 'Cantidad de clusters' de '{cluster_sheet_name}' "
+                f"en esas filas indica {values}"
+            )
+        spfs = {item.spf for item in stage_clusters}
+        if config is not None and len(spfs) == 1 and spfs != {config.spf}:
+            cell = config.source_spf_cell or "SPF"
+            differences.append(
+                f"'{config_sheet_name}'!{cell} indica SPF {config.spf}, "
+                f"pero '{cluster_sheet_name}' indica SPF {next(iter(spfs))}"
+            )
+        if differences:
+            details.append(
+                f"{filename}: hoja '{cluster_sheet_name}', etapa {stage_number}, "
+                f"{row_location}: hay {count} clústeres cargados; "
+                f"{'; '.join(differences)}. Si continuás, se usarán los "
+                "clústeres y SPF de esas filas para el Excel actualizado."
+            )
+    return details
 
 
 def _build_stages(
@@ -799,7 +838,6 @@ def _build_stages(
     configs: list[FractureConfig],
     *,
     prefer_punzados: bool = False,
-    source_label: str = "Punzados",
 ) -> tuple[list[StageInterval], list[str], list[str]]:
     grouped: dict[int, list[Cluster]] = {}
     for cluster in clusters:
@@ -854,18 +892,14 @@ def _build_stages(
 
         if len(expected_counts) > 1:
             detail = f"Etapa {stage_number}: la cantidad esperada de clústeres no es consistente."
-            if prefer_punzados:
-                warnings.append(f"{source_label}: {detail} Se usan {len(stage_clusters)} clústeres encontrados.")
-            else:
+            if not prefer_punzados:
                 raise InvalidWorkbookError(detail)
         elif expected_counts and len(stage_clusters) != next(iter(expected_counts)):
             detail = (
                 f"Etapa {stage_number}: se encontraron {len(stage_clusters)} clústeres "
                 f"y se esperaban {next(iter(expected_counts))} según Punzados."
             )
-            if prefer_punzados:
-                warnings.append(f"{source_label}: {detail} Se usan los clústeres encontrados.")
-            else:
+            if not prefer_punzados:
                 raise InvalidWorkbookError(detail)
         if len(spfs) != 1:
             raise InvalidWorkbookError(f"Etapa {stage_number}: hay valores SPF inconsistentes.")
@@ -1005,13 +1039,20 @@ def analyze_workbook(
         if config_location is None:
             configs = _infer_fracture_configs(clusters)
             well_name = Path(filename).stem.replace("_version2", "")
+            if prefer_punzados:
+                config_warnings = _source_discrepancies(
+                    [], clusters, filename, cluster_sheet.title
+                )
+                decision_details.extend(config_warnings)
         else:
             config_sheet, config_header_row = config_location
             configs = _extract_fracture_configs(config_sheet, config_header_row)
             if prefer_punzados:
-                configs, config_warnings = _configs_from_punzados(
-                    configs, clusters, filename, config_sheet.title, cluster_sheet.title
+                config_warnings = _source_discrepancies(
+                    configs, clusters, filename, cluster_sheet.title, config_sheet.title
                 )
+                decision_details.extend(config_warnings)
+                configs = _configs_from_punzados(configs, clusters)
             else:
                 configs, config_warnings, config_decisions = _reconcile_fracture_configs(
                     configs, clusters
@@ -1040,7 +1081,6 @@ def analyze_workbook(
             )
         stages, warnings, checks = _build_stages(
             clusters, configs, prefer_punzados=prefer_punzados,
-            source_label=f"{filename}, hoja '{cluster_sheet.title}'",
         )
         if decision_details and not accept_recoveries:
             raise ProcessingDecisionRequired(decision_details)
