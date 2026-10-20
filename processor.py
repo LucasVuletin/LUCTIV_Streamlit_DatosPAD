@@ -778,7 +778,14 @@ def _configs_from_punzados(
         else:
             config_clusters = [item for stage_clusters in stages for item in stage_clusters]
             effective.extend(_infer_fracture_configs(config_clusters))
-    return effective
+    covered_stages = {
+        stage for config in configs
+        for stage in range(config.start_stage, config.end_stage + 1)
+    }
+    uncovered_clusters = [item for item in clusters if item.stage not in covered_stages]
+    if uncovered_clusters:
+        effective.extend(_infer_fracture_configs(uncovered_clusters))
+    return sorted(effective, key=lambda config: (config.start_stage, config.end_stage))
 
 
 def _source_discrepancies(
@@ -805,6 +812,10 @@ def _source_discrepancies(
         declared = {item.expected_clusters for item in stage_clusters
                     if item.expected_clusters is not None}
         differences: list[str] = []
+        if config is None and config_sheet_name is not None:
+            differences.append(
+                f"la hoja '{config_sheet_name}' no tiene un rango Inicio/Fin que incluya la etapa {stage_number}"
+            )
         if config is not None and count != config.clusters:
             cell = config.source_count_cell or "N° Cl"
             differences.append(
@@ -824,11 +835,16 @@ def _source_discrepancies(
                 f"pero '{cluster_sheet_name}' indica SPF {next(iter(spfs))}"
             )
         if differences:
+            action = (
+                "Si continuás, se usará Punzados para crear la configuración faltante "
+                "con esa cantidad de clústeres y SPF."
+                if config is None and config_sheet_name is not None else
+                "Si continuás, se usarán los clústeres y SPF de esas filas para el Excel actualizado."
+            )
             details.append(
                 f"{filename}: hoja '{cluster_sheet_name}', etapa {stage_number}, "
                 f"{row_location}: hay {count} clústeres cargados; "
-                f"{'; '.join(differences)}. Si continuás, se usarán los "
-                "clústeres y SPF de esas filas para el Excel actualizado."
+                f"{'; '.join(differences)}. {action}"
             )
     return details
 
@@ -1086,6 +1102,7 @@ def analyze_workbook(
             raise ProcessingDecisionRequired(decision_details)
         if accept_recoveries:
             config_warnings = [detail.replace("Si continuás, se usarán", "Se usaron")
+                               .replace("Si continuás, se usará", "Se usó")
                                for detail in config_warnings]
         warnings[:0] = config_warnings
         if survey_source_warning:
