@@ -14,6 +14,7 @@ from processor import (
     ProcessingDecisionRequired,
     process_uploaded_package,
 )
+from revision_processor import process_revision, updated_plan_rows
 from well_visualization import build_well_figure, calculate_impact_metrics
 
 
@@ -240,6 +241,132 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+mode = st.radio(
+    "Modo de trabajo",
+    ("Generar terminado", "Actualizar y comparar"),
+    horizontal=True,
+    label_visibility="collapsed",
+    key="luctiv_mode",
+)
+
+if mode == "Actualizar y comparar":
+    st.title("Actualizar el fracplan y comparar")
+    st.write(
+        "Cargá DATOS PAD, el fracplan nuevo y el terminado anterior. "
+        "Si tenés el fracplan original, agregalo para medir los corrimientos de cada clúster."
+    )
+    upload_columns = st.columns(3)
+    with upload_columns[0]:
+        pad_file = st.file_uploader("1. DATOS PAD", type=["xlsx", "xlsm"], key="revision_pad")
+    with upload_columns[1]:
+        fracplan_file = st.file_uploader("2. Fracplan nuevo", type=["xlsx", "xlsm"], key="revision_fracplan")
+    with upload_columns[2]:
+        previous_file = st.file_uploader("3. Terminado anterior", type=["xlsx", "xlsm"], key="revision_previous")
+    original_file = st.file_uploader(
+        "4. Fracplan original (opcional, para comparar cada clúster)",
+        type=["xlsx", "xlsm"], key="revision_original",
+    )
+    required_files = (pad_file, fracplan_file, previous_file)
+    all_files = (*required_files, original_file)
+    ready = all(required_files)
+    fingerprint = None
+    if ready:
+        fingerprint = sha256(b"".join(
+            len(upload.getvalue()).to_bytes(8, "big") + upload.getvalue()
+            for upload in all_files if upload is not None
+        )).hexdigest()
+    if st.session_state.get("revision_fingerprint") != fingerprint:
+        st.session_state["revision_fingerprint"] = fingerprint
+        st.session_state.pop("revision_generated", None)
+        st.session_state.pop("revision_decision", None)
+    clicked = st.button("Actualizar y comparar", type="primary", disabled=not ready)
+    if clicked:
+        st.session_state.pop("revision_decision", None)
+    pending = st.session_state.get("revision_decision")
+    accepted = False
+    if pending and pending["fingerprint"] == fingerprint:
+        st.warning("Revisá estas diferencias entre las fuentes antes de continuar:")
+        for detail in pending["details"]:
+            st.write(f"• {detail}")
+        accepted = st.button("Usar los datos verificados y continuar", type="primary")
+        if st.button("Cancelar y revisar los Excel"):
+            st.session_state.pop("revision_decision", None)
+            st.rerun()
+    if (clicked or accepted) and ready:
+        try:
+            with st.spinner("Actualizando y comparando los Excel…"):
+                revision_generated = process_revision(
+                    pad_file.getvalue(), pad_file.name,
+                    fracplan_file.getvalue(), fracplan_file.name,
+                    previous_file.getvalue(), previous_file.name,
+                    TEMPLATE_PATH,
+                    original_fracplan=(original_file.getvalue(), original_file.name)
+                    if original_file else None,
+                    accept_recoveries=accepted,
+                )
+        except ProcessingDecisionRequired as exc:
+            st.session_state["revision_decision"] = {
+                "fingerprint": fingerprint, "details": exc.details,
+            }
+            st.rerun()
+        except LuctivError as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error("No se pudo actualizar la revisión. Revisá la estructura de los Excel.")
+        else:
+            st.session_state["revision_generated"] = revision_generated
+            st.session_state.pop("revision_decision", None)
+            st.rerun()
+    revision_generated = st.session_state.get("revision_generated")
+    if revision_generated and ready:
+        result = revision_generated.generated.result
+        comparison = revision_generated.comparison
+        st.success(f"Excel actualizado de {result.well_name} listo para descargar.")
+        st.download_button(
+            "Descargar Excel actualizado",
+            data=revision_generated.generated.data,
+            file_name=result.output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+        metrics = st.columns(4)
+        metrics[0].metric("Etapas con cambios", comparison.stage_changes)
+        metrics[1].metric("Clústeres con cambios", comparison.cluster_changes if comparison.cluster_changes is not None else "No verificable")
+        metrics[2].metric("Configuraciones", comparison.config_changes)
+        metrics[3].metric("Registros Survey", comparison.survey_changes)
+        for limitation in comparison.limitations:
+            st.info(limitation)
+        for warning in result.warnings:
+            st.warning(warning)
+        st.subheader("Fracplan actualizado por etapa")
+        st.dataframe(
+            [{"Etapa": row["stage"], "Tope MD (m)": row["top_md"],
+              "Fondo MD (m)": row["base_md"], "Tapón MD (m)": row["plug_md"],
+              "Intervalo (m)": row["interval_m"], "Clústeres": row["clusters"],
+              "SPF": row["spf"]} for row in updated_plan_rows(result)],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.subheader("Detalle de diferencias")
+        if comparison.changes:
+            st.dataframe(
+                [{"Área": item.area, "Elemento": item.item, "Campo": item.field,
+                  "Anterior": item.previous, "Actual": item.current,
+                  "Cambio": item.delta, "Nota / motivo": item.note}
+                 for item in comparison.changes],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.write("No se detectaron diferencias en los datos comparables.")
+        with st.expander("Fuentes y validaciones"):
+            for name, source in result.source_sheets.items():
+                st.write(f"**{name}:** {source}")
+            for check in result.checks:
+                st.write(f"✓ {check}")
+    st.stop()
+
 
 def _render_upload_controls(compact: bool):
     controls = (
