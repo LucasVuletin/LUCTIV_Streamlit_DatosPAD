@@ -17,7 +17,7 @@ Se puede agregar el fracplan original como tercer archivo opcional para medir lo
 
 El Excel actualizado conserva la hoja `Datos terminados` y el formato habitual. La comparación se muestra en la app y no se agrega como pestaña del Excel.
 
-En este modo, la cantidad de clústeres y el SPF presentes en `Punzados` prevalecen sobre valores desactualizados de `Input` o de la columna de cantidad esperada. Si difieren, la app muestra una advertencia con el nombre del Excel, la hoja y la etapa, y ajusta los tramos de `Datos Fractura` del terminado actualizado.
+En este modo, si la cantidad de clústeres o el SPF de `Punzados` contradicen `Input` o la cantidad esperada, la app identifica el Excel, la hoja, las filas y la etapa y pide confirmar si se continúa. Solo después de esa confirmación utiliza los valores presentes en `Punzados` y ajusta los tramos de `Datos Fractura` del terminado actualizado.
 
 ## Funcionamiento
 
