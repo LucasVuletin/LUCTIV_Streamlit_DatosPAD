@@ -11,9 +11,9 @@ También entrega el Survey en TXT y CSV. El usuario final solo necesita abrir la
 
 ## Actualizar y comparar una revisión
 
-El modo **Actualizar y comparar** recibe tres Excel obligatorios: `DATOS PAD` original, fracplan nuevo con los punzados modificados y el Excel terminado anterior. La interfaz muestra el plan actualizado por etapa y las diferencias de Tope, Fondo, tapón, configuración y Survey.
+El modo **Actualizar y comparar** recibe dos Excel obligatorios: el fracplan nuevo con los punzados modificados y las pestañas necesarias de DATOS PAD incorporadas, y el Excel terminado anterior. La interfaz muestra el plan actualizado por etapa y las diferencias de Tope, Fondo, tapón, configuración y Survey.
 
-Se puede agregar el fracplan original como cuarto archivo para medir los cambios de cada clúster por su número. Sin ese archivo, el terminado anterior solo permite comparar los límites por etapa porque no conserva el detalle de cada clúster. Los motivos operativos se muestran cuando aparecen en las observaciones del fracplan nuevo; de otro modo se indican como no documentados.
+Se puede agregar el fracplan original como tercer archivo opcional para medir los cambios de cada clúster por su número. Sin ese archivo, el terminado anterior solo permite comparar los límites por etapa porque no conserva el detalle de cada clúster. Los motivos operativos se muestran cuando aparecen en las observaciones del fracplan nuevo; de otro modo se indican como no documentados.
 
 El Excel actualizado conserva la hoja `Datos terminados` y el formato habitual. La comparación se muestra en la app y no se agrega como pestaña del Excel.
 
