@@ -1084,6 +1084,9 @@ def analyze_workbook(
         )
         if decision_details and not accept_recoveries:
             raise ProcessingDecisionRequired(decision_details)
+        if accept_recoveries:
+            config_warnings = [detail.replace("Si continuás, se usarán", "Se usaron")
+                               for detail in config_warnings]
         warnings[:0] = config_warnings
         if survey_source_warning:
             warnings.insert(0, survey_source_warning)
