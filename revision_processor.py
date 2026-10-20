@@ -418,7 +418,8 @@ def process_combined_revision(
                                   prefer_punzados=True)
     except ProcessingDecisionRequired as exc:
         raise ProcessingDecisionRequired(
-            [f"{source_filename}: {detail}" for detail in exc.details]
+            [detail if detail.startswith(f"{source_filename}:")
+             else f"{source_filename}: {detail}" for detail in exc.details]
         ) from exc
     except InvalidWorkbookError as exc:
         raise InvalidWorkbookError(f"{source_filename}: {exc}") from exc
