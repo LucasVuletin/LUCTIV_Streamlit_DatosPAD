@@ -14,7 +14,7 @@ from processor import (
     ProcessingDecisionRequired,
     process_uploaded_package,
 )
-from revision_processor import process_revision, updated_plan_rows
+from revision_processor import process_combined_revision, updated_plan_rows
 from well_visualization import build_well_figure, calculate_impact_metrics
 
 
@@ -253,21 +253,21 @@ mode = st.radio(
 if mode == "Actualizar y comparar":
     st.title("Actualizar el fracplan y comparar")
     st.write(
-        "Cargá DATOS PAD, el fracplan nuevo y el terminado anterior. "
+        "Cargá el fracplan nuevo con las pestañas necesarias de DATOS PAD y el terminado anterior. "
         "Si tenés el fracplan original, agregalo para medir los corrimientos de cada clúster."
     )
-    upload_columns = st.columns(3)
+    upload_columns = st.columns(2)
     with upload_columns[0]:
-        pad_file = st.file_uploader("1. DATOS PAD", type=["xlsx", "xlsm"], key="revision_pad")
+        source_file = st.file_uploader(
+            "1. Fracplan nuevo con pestañas DATOS PAD", type=["xlsx", "xlsm"], key="revision_source"
+        )
     with upload_columns[1]:
-        fracplan_file = st.file_uploader("2. Fracplan nuevo", type=["xlsx", "xlsm"], key="revision_fracplan")
-    with upload_columns[2]:
-        previous_file = st.file_uploader("3. Terminado anterior", type=["xlsx", "xlsm"], key="revision_previous")
+        previous_file = st.file_uploader("2. Terminado anterior", type=["xlsx", "xlsm"], key="revision_previous")
     original_file = st.file_uploader(
-        "4. Fracplan original (opcional, para comparar cada clúster)",
+        "3. Fracplan original (opcional, para comparar cada clúster)",
         type=["xlsx", "xlsm"], key="revision_original",
     )
-    required_files = (pad_file, fracplan_file, previous_file)
+    required_files = (source_file, previous_file)
     all_files = (*required_files, original_file)
     ready = all(required_files)
     fingerprint = None
@@ -296,9 +296,8 @@ if mode == "Actualizar y comparar":
     if (clicked or accepted) and ready:
         try:
             with st.spinner("Actualizando y comparando los Excel…"):
-                revision_generated = process_revision(
-                    pad_file.getvalue(), pad_file.name,
-                    fracplan_file.getvalue(), fracplan_file.name,
+                revision_generated = process_combined_revision(
+                    source_file.getvalue(), source_file.name,
                     previous_file.getvalue(), previous_file.name,
                     TEMPLATE_PATH,
                     original_fracplan=(original_file.getvalue(), original_file.name)
