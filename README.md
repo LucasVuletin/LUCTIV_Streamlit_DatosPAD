@@ -9,6 +9,14 @@ LUCTIV es una aplicación web de Streamlit que procesa archivos Excel de pozo (`
 
 También entrega el Survey en TXT y CSV. El usuario final solo necesita abrir la aplicación, cargar el archivo y descargar el resultado.
 
+## Actualizar y comparar una revisión
+
+El modo **Actualizar y comparar** recibe tres Excel obligatorios: `DATOS PAD` original, fracplan nuevo con los punzados modificados y el Excel terminado anterior. La interfaz muestra el plan actualizado por etapa y las diferencias de Tope, Fondo, tapón, configuración y Survey.
+
+Se puede agregar el fracplan original como cuarto archivo para medir los cambios de cada clúster por su número. Sin ese archivo, el terminado anterior solo permite comparar los límites por etapa porque no conserva el detalle de cada clúster. Los motivos operativos se muestran cuando aparecen en las observaciones del fracplan nuevo; de otro modo se indican como no documentados.
+
+El Excel actualizado conserva la hoja `Datos terminados` y el formato habitual. La comparación se muestra en la app y no se agrega como pestaña del Excel.
+
 ## Funcionamiento
 
 1. Cargar un archivo `.xlsm`, `.xlsx` o un ZIP de PAD.
