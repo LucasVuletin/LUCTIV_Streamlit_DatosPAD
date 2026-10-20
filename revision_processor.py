@@ -32,6 +32,7 @@ from processor import (
     _matching_survey_source,
     _reconcile_fracture_configs,
     _safe_output_filename,
+    analyze_workbook,
     generate_finished_workbook,
 )
 
@@ -394,7 +395,41 @@ def process_revision(
 ) -> GeneratedRevision:
     result = _read_revised_sources(pad_bytes, pad_filename, fracplan_bytes,
                                    fracplan_filename, accept_recoveries=accept_recoveries)
+    return _finish_revision(result, previous_bytes, previous_filename,
+                            template_path, original_fracplan)
+
+
+def process_combined_revision(
+    source_bytes: bytes,
+    source_filename: str,
+    previous_bytes: bytes,
+    previous_filename: str,
+    template_path: str | Path,
+    *,
+    original_fracplan: tuple[bytes, str] | None = None,
+    accept_recoveries: bool = False,
+) -> GeneratedRevision:
+    """Compare a revised fracplan containing the pasted DATOS PAD tabs."""
+    if Path(source_filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise InvalidWorkbookError(f"{source_filename}: se requiere un Excel .xlsm o .xlsx.")
+    result = analyze_workbook(source_bytes, source_filename,
+                              accept_recoveries=accept_recoveries)
+    result.output_filename = _safe_output_filename(result.well_name).removesuffix(".xlsx") + "_actualizado.xlsx"
+    result.source_sheets = {
+        name: f"{source_filename}: {location}"
+        for name, location in result.source_sheets.items()
+    }
+    return _finish_revision(result, previous_bytes, previous_filename,
+                            template_path, original_fracplan)
+
+
+def _finish_revision(
+    result: ProcessingResult,
+    previous_bytes: bytes,
+    previous_filename: str,
+    template_path: str | Path,
+    original_fracplan: tuple[bytes, str] | None,
+) -> GeneratedRevision:
     comparison = compare_revision(result, previous_bytes, previous_filename, original_fracplan)
     generated = generate_finished_workbook(result, template_path)
     return GeneratedRevision(generated, comparison)
-
