@@ -25,13 +25,19 @@ Si una etapa aparece en `Punzados` pero no está incluida en ningún rango `Inic
 
 1. Cargar un archivo `.xlsm`, `.xlsx` o un ZIP de PAD.
 2. Presionar `Procesar archivo`.
-3. Si Survey está incompleto o Input y Punzados difieren, revisar los datos detectados y confirmar si se debe continuar.
+3. Si hay diferencias entre Input y Punzados, revisar el aviso. Para discrepancias de SPF, elegir `Cancelar` o `Continuar` para calcular profundidades.
 4. Revisar métricas, validaciones y advertencias.
 5. Descargar el Excel y el Survey TXT/CSV. Para un PAD, descargar el ZIP con los resultados y el resumen del lote.
 
 LUCTIV no ejecuta macros, no modifica el archivo original y procesa el contenido en memoria.
 
 Después del procesamiento individual muestra una trayectoria 3D interactiva del pozo, el intervalo estimulado, las etapas y métricas de tiempo y volumen procesado. Usa DX/DY y TVD del Survey cuando están disponibles; de lo contrario reconstruye una trayectoria relativa con el método de curvatura mínima.
+
+## Diferencias de SPF entre Input y Punzados
+
+En **Generar terminado**, la app presenta un aviso general cuando el SPF de Input difiere del de Punzados. El usuario elige `Cancelar` o `Continuar`; no necesita resolver cada etapa para calcular las profundidades.
+
+Al continuar, LUCTIV calcula Tope, Fondo y Tapón con los datos de profundidad de Punzados. Conserva el SPF de Input en Datos Fractura y no modifica el Excel cargado. El Excel terminado agrega una hoja `Resumen` con el recordatorio **«Recordar la discrepancia»** para confirmar el SPF con el cliente antes de utilizarlo.
 
 ## Estructura Esperada
 
@@ -76,7 +82,7 @@ La aplicación bloquea la descarga cuando detecta errores críticos, por ejemplo
 - configuraciones superpuestas;
 - etapas sin configuración;
 - cantidad incorrecta de clústeres por etapa;
-- SPF inconsistente;
+- SPF inconsistente dentro de una misma etapa;
 - números de clúster duplicados;
 - `TOPE >= FONDO`;
 - tapón distinto de `FONDO + 3.7`;
