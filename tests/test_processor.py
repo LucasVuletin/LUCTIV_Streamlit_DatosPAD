@@ -328,11 +328,38 @@ def test_punzados_count_requires_confirmation_when_input_is_stale():
     assert any("Se usó Punzados" in warning for warning in result.warnings)
 
 
-def test_wrong_spf_is_rejected():
-    data = make_source_workbook(stage_count=2, spf_by_stage={2: 5})
+def test_spf_discrepancy_requires_customer_selection():
+    configs = [{"label": "ET 1-2", "start": 1, "end": 2, "clusters": 10, "spf": 3}]
+    data = make_source_workbook(stage_count=2, configs=configs, spf_by_stage={2: 2})
 
-    with pytest.raises(InvalidWorkbookError, match="SPF"):
-        analyze_workbook(data, "pozo.xlsx")
+    for accept_recoveries in (False, True):
+        with pytest.raises(ProcessingDecisionRequired) as pending:
+            analyze_workbook(data, "ELG-116_datos.xlsx", accept_recoveries=accept_recoveries)
+        assert len(pending.value.spf_conflicts) == 1
+        conflict = pending.value.spf_conflicts[0]
+        assert (conflict.stage, conflict.punzados_spf, conflict.input_spf) == (2, 2, 3)
+        assert "'Input'!E4" in conflict.detail
+
+    for selected in (2, 3):
+        generated = process_uploaded_workbook(
+            data, "ELG-116_datos.xlsx", TEMPLATE,
+            accept_recoveries=True,
+            confirmed_spf={"ELG-116_datos.xlsx::2": selected},
+        )
+        config = next(item for item in generated.result.fracture_configs
+                      if item.start_stage <= 2 <= item.end_stage)
+        assert config.spf == selected
+        assert {item.spf for item in generated.result.clusters if item.stage == 2} == {selected}
+        output = load_workbook(BytesIO(generated.data), data_only=True)
+        assert output["Datos terminados"].cell(
+            3 + generated.result.fracture_configs.index(config), 5
+        ).value == selected
+        assert any(f"SPF {selected} confirmado" in warning
+                   for warning in generated.result.warnings)
+
+    original = load_workbook(BytesIO(data))
+    assert original["Input"]["E4"].value == 3
+    assert original["Punzados"]["E21"].value == 2
 
 
 def test_stage_with_eleven_clusters_is_valid():

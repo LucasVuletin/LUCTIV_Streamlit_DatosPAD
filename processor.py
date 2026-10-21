@@ -73,9 +73,27 @@ class InvalidWorkbookError(LuctivError):
 class ProcessingDecisionRequired(LuctivError):
     """A recoverable source discrepancy needs the user's choice before generating output."""
 
-    def __init__(self, details: Iterable[str]):
+    def __init__(
+        self,
+        details: Iterable[str],
+        spf_conflicts: Iterable[SpfConflict] = (),
+    ):
         self.details = tuple(details)
+        self.spf_conflicts = tuple(spf_conflicts)
         super().__init__("Se encontraron diferencias entre las hojas del archivo.")
+
+
+@dataclass(frozen=True)
+class SpfConflict:
+    filename: str
+    stage: int
+    punzados_spf: int
+    input_spf: int
+    detail: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.filename}::{self.stage}"
 
 
 @dataclass(frozen=True)
@@ -849,6 +867,91 @@ def _source_discrepancies(
     return details
 
 
+def _spf_source_discrepancies(
+    configs: list[FractureConfig],
+    clusters: list[Cluster],
+    filename: str,
+    config_sheet_name: str,
+    cluster_sheet_name: str,
+) -> list[SpfConflict]:
+    """Locate stage-level SPF conflicts without choosing a source automatically."""
+    grouped: dict[int, list[Cluster]] = {}
+    for cluster in clusters:
+        grouped.setdefault(cluster.stage, []).append(cluster)
+
+    conflicts: list[SpfConflict] = []
+    for stage_number, stage_clusters in sorted(grouped.items()):
+        config = next(
+            (item for item in configs if item.start_stage <= stage_number <= item.end_stage),
+            None,
+        )
+        spfs = {item.spf for item in stage_clusters}
+        if config is None or len(spfs) != 1 or spfs == {config.spf}:
+            continue
+        rows = sorted(item.source_row for item in stage_clusters if item.source_row is not None)
+        row_location = (
+            f"fila {rows[0]}" if len(rows) == 1 else f"filas {rows[0]} a {rows[-1]}"
+        ) if rows else "filas de la etapa"
+        config_cell = f"!{config.source_spf_cell}" if config.source_spf_cell else ""
+        punzados_spf = next(iter(spfs))
+        conflicts.append(
+            SpfConflict(
+                filename=filename,
+                stage=stage_number,
+                punzados_spf=punzados_spf,
+                input_spf=config.spf,
+                detail=(
+                    f"{filename}, etapa {stage_number}: '{cluster_sheet_name}' "
+                    f"({row_location}) indica {punzados_spf} tiros/pie y "
+                    f"'{config_sheet_name}'{config_cell} indica {config.spf} tiros/pie. "
+                    "Seleccioná el SPF confirmado por el cliente antes de continuar."
+                ),
+            )
+        )
+    return conflicts
+
+
+def _apply_confirmed_spf(
+    configs: list[FractureConfig],
+    clusters: list[Cluster],
+    selected_by_stage: dict[int, int],
+) -> tuple[list[FractureConfig], list[Cluster]]:
+    """Apply the confirmed SPF in memory, splitting Input ranges when necessary."""
+    effective_clusters = [
+        replace(cluster, spf=selected_by_stage.get(cluster.stage, cluster.spf))
+        for cluster in clusters
+    ]
+    effective_configs: list[FractureConfig] = []
+    for config in configs:
+        segment_start = config.start_stage
+        segment_spf = selected_by_stage.get(segment_start, config.spf)
+        for stage in range(config.start_stage + 1, config.end_stage + 2):
+            next_spf = selected_by_stage.get(stage, config.spf)
+            if stage <= config.end_stage and next_spf == segment_spf:
+                continue
+            segment_end = stage - 1
+            label = (
+                config.label
+                if segment_start == config.start_stage and segment_end == config.end_stage
+                else f"ET {segment_start}-{segment_end}"
+            )
+            effective_configs.append(
+                replace(
+                    config,
+                    label=label,
+                    start_stage=segment_start,
+                    end_stage=segment_end,
+                    spf=segment_spf,
+                    source_spf_cell=(
+                        config.source_spf_cell if segment_spf == config.spf else None
+                    ),
+                )
+            )
+            segment_start = stage
+            segment_spf = next_spf
+    return effective_configs, effective_clusters
+
+
 def _build_stages(
     clusters: list[Cluster],
     configs: list[FractureConfig],
@@ -1000,6 +1103,7 @@ def analyze_workbook(
     *,
     accept_recoveries: bool = False,
     prefer_punzados: bool = False,
+    confirmed_spf: dict[str, int] | None = None,
 ) -> ProcessingResult:
     stream = BytesIO(file_obj) if isinstance(file_obj, bytes) else file_obj
     try:
@@ -1052,6 +1156,7 @@ def analyze_workbook(
         inferred_configs = config_location is None
         config_warnings: list[str] = []
         decision_details: list[str] = []
+        spf_conflicts: list[SpfConflict] = []
         if config_location is None:
             configs = _infer_fracture_configs(clusters)
             well_name = Path(filename).stem.replace("_version2", "")
@@ -1076,6 +1181,12 @@ def analyze_workbook(
                 decision_details.extend(config_decisions)
             well_name = _extract_well_name(config_sheet, filename)
 
+            if not prefer_punzados:
+                spf_conflicts = _spf_source_discrepancies(
+                    configs, clusters, filename, config_sheet.title, cluster_sheet.title
+                )
+                decision_details.extend(conflict.detail for conflict in spf_conflicts)
+
         survey_source_warning = None
         try:
             survey = _extract_survey(survey_sheet, survey_header_row)
@@ -1095,6 +1206,26 @@ def analyze_workbook(
                 f"La hoja '{original_sheet_name}' tiene datos Survey incompletos. "
                 f"'{survey_sheet.title}' contiene {len(survey)} registros y coincide en MD y TVD."
             )
+        if spf_conflicts:
+            selections = confirmed_spf or {}
+            selected_by_stage: dict[int, int] = {}
+            for conflict in spf_conflicts:
+                selected = selections.get(conflict.key)
+                if selected is not None and selected not in {
+                    conflict.punzados_spf, conflict.input_spf
+                }:
+                    raise InvalidWorkbookError(
+                        f"{conflict.filename}, etapa {conflict.stage}: el SPF seleccionado "
+                        "no coincide con los valores de Punzados o Input."
+                    )
+                if not accept_recoveries or selected is None:
+                    raise ProcessingDecisionRequired(
+                        decision_details, spf_conflicts=spf_conflicts
+                    )
+                selected_by_stage[conflict.stage] = selected
+            configs, clusters = _apply_confirmed_spf(
+                configs, clusters, selected_by_stage
+            )
         stages, warnings, checks = _build_stages(
             clusters, configs, prefer_punzados=prefer_punzados,
         )
@@ -1104,6 +1235,13 @@ def analyze_workbook(
             config_warnings = [detail.replace("Si continuás, se usarán", "Se usaron")
                                .replace("Si continuás, se usará", "Se usó")
                                for detail in config_warnings]
+            config_warnings.extend(
+                f"{conflict.filename}, etapa {conflict.stage}: SPF "
+                f"{selected_by_stage[conflict.stage]} confirmado por el usuario; "
+                f"Punzados indicaba {conflict.punzados_spf} e Input "
+                f"{conflict.input_spf}. El Excel cargado no se modificó."
+                for conflict in spf_conflicts
+            )
         warnings[:0] = config_warnings
         if survey_source_warning:
             warnings.insert(0, survey_source_warning)
@@ -1402,11 +1540,13 @@ def process_uploaded_workbook(
     template_path: str | Path,
     *,
     accept_recoveries: bool = False,
+    confirmed_spf: dict[str, int] | None = None,
 ) -> GeneratedWorkbook:
     if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise InvalidWorkbookError("LUCTIV solo acepta archivos Excel .xlsm o .xlsx.")
     result = analyze_workbook(
-        file_bytes, filename, accept_recoveries=accept_recoveries
+        file_bytes, filename, accept_recoveries=accept_recoveries,
+        confirmed_spf=confirmed_spf,
     )
     return generate_finished_workbook(result, template_path)
 
@@ -1506,12 +1646,14 @@ def process_uploaded_package(
     template_path: str | Path,
     *,
     accept_recoveries: bool = False,
+    confirmed_spf: dict[str, int] | None = None,
 ) -> GeneratedWorkbook | GeneratedPackage:
     """Process either one workbook or every compatible workbook inside a ZIP package."""
     suffix = Path(filename).suffix.lower()
     if suffix in ALLOWED_EXTENSIONS:
         return process_uploaded_workbook(
-            file_bytes, filename, template_path, accept_recoveries=accept_recoveries
+            file_bytes, filename, template_path, accept_recoveries=accept_recoveries,
+            confirmed_spf=confirmed_spf,
         )
     if suffix != ".zip":
         raise InvalidWorkbookError(
@@ -1526,6 +1668,7 @@ def process_uploaded_package(
     workbooks: list[PackageWorkbook] = []
     issues: list[PackageIssue] = []
     decision_details: list[str] = []
+    spf_conflicts: list[SpfConflict] = []
     try:
         excel_entries = [
             info
@@ -1571,11 +1714,13 @@ def process_uploaded_package(
                     member_filename,
                     template_path,
                     accept_recoveries=accept_recoveries,
+                    confirmed_spf=confirmed_spf,
                 )
             except ProcessingDecisionRequired as exc:
                 decision_details.extend(
                     f"{member_filename}: {detail}" for detail in exc.details
                 )
+                spf_conflicts.extend(exc.spf_conflicts)
                 continue
             except (InvalidWorkbookError, LuctivError, BadZipFile, RuntimeError) as exc:
                 category = (
@@ -1590,7 +1735,7 @@ def process_uploaded_package(
         source_archive.close()
 
     if decision_details:
-        raise ProcessingDecisionRequired(decision_details)
+        raise ProcessingDecisionRequired(decision_details, spf_conflicts=spf_conflicts)
 
     if not workbooks:
         details = "; ".join(
