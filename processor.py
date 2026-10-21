@@ -13,6 +13,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from openpyxl import load_workbook
 from openpyxl.cell import Cell
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -25,6 +26,17 @@ FORMULA_ERROR_VALUES = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A"}
 MAX_PACKAGE_EXCEL_FILES = 50
 MAX_PACKAGE_ENTRY_BYTES = 25 * 1024 * 1024
 MAX_PACKAGE_TOTAL_BYTES = 150 * 1024 * 1024
+SPF_DISCREPANCY_NOTICE = (
+    "Se detectaron diferencias de tiros por pie (SPF) entre Input y Punzados. "
+    "Podés continuar con el cálculo de profundidades, que usa Tope y Fondo de Punzados. "
+    "El SPF no se corregirá y quedará un recordatorio en el Excel exportado."
+)
+SPF_DISCREPANCY_REMINDER = (
+    "Recordar la discrepancia: Input y Punzados tienen valores de tiros por pie (SPF) "
+    "diferentes. Las profundidades se calcularon con Tope y Fondo de Punzados. "
+    "El SPF de Datos Fractura conserva el valor de Input; confirmar el SPF con el cliente "
+    "antes de utilizarlo."
+)
 
 CONFIG_HEADER_GROUPS = (
     ("Etapas", "Rango de etapas", "Stage range"),
@@ -149,6 +161,7 @@ class ProcessingResult:
     warnings: list[str] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
     source_sheets: dict[str, str] = field(default_factory=dict)
+    spf_discrepancy: bool = False
 
     @property
     def wellbore_row_count(self) -> int:
@@ -911,52 +924,12 @@ def _spf_source_discrepancies(
     return conflicts
 
 
-def _apply_confirmed_spf(
-    configs: list[FractureConfig],
-    clusters: list[Cluster],
-    selected_by_stage: dict[int, int],
-) -> tuple[list[FractureConfig], list[Cluster]]:
-    """Apply the confirmed SPF in memory, splitting Input ranges when necessary."""
-    effective_clusters = [
-        replace(cluster, spf=selected_by_stage.get(cluster.stage, cluster.spf))
-        for cluster in clusters
-    ]
-    effective_configs: list[FractureConfig] = []
-    for config in configs:
-        segment_start = config.start_stage
-        segment_spf = selected_by_stage.get(segment_start, config.spf)
-        for stage in range(config.start_stage + 1, config.end_stage + 2):
-            next_spf = selected_by_stage.get(stage, config.spf)
-            if stage <= config.end_stage and next_spf == segment_spf:
-                continue
-            segment_end = stage - 1
-            label = (
-                config.label
-                if segment_start == config.start_stage and segment_end == config.end_stage
-                else f"ET {segment_start}-{segment_end}"
-            )
-            effective_configs.append(
-                replace(
-                    config,
-                    label=label,
-                    start_stage=segment_start,
-                    end_stage=segment_end,
-                    spf=segment_spf,
-                    source_spf_cell=(
-                        config.source_spf_cell if segment_spf == config.spf else None
-                    ),
-                )
-            )
-            segment_start = stage
-            segment_spf = next_spf
-    return effective_configs, effective_clusters
-
-
 def _build_stages(
     clusters: list[Cluster],
     configs: list[FractureConfig],
     *,
     prefer_punzados: bool = False,
+    allow_spf_discrepancy: bool = False,
 ) -> tuple[list[StageInterval], list[str], list[str]]:
     grouped: dict[int, list[Cluster]] = {}
     for cluster in clusters:
@@ -1065,7 +1038,7 @@ def _build_stages(
                     f"{len(stage_clusters)} clústeres y la configuración indica {config.clusters}."
                 )
             actual_spf = {cluster.spf for cluster in stage_clusters}
-            if actual_spf != {config.spf}:
+            if actual_spf != {config.spf} and not allow_spf_discrepancy:
                 raise InvalidWorkbookError(
                     f"{config.label}, etapa {stage_number}: SPF {sorted(actual_spf)} "
                     f"y la configuración indica {config.spf}."
@@ -1090,10 +1063,11 @@ def _build_stages(
             f"{len(clusters)} clústeres procesados",
             "Cantidad de clústeres por etapa obtenida de Punzados" if prefer_punzados
             else "Cantidad de clústeres por etapa correcta",
-            "SPF consistente con las configuraciones",
             f"{len(configs)} configuraciones de fractura",
         ]
     )
+    if not allow_spf_discrepancy:
+        checks.append("SPF consistente con las configuraciones")
     return stages, warnings, checks
 
 
@@ -1103,7 +1077,6 @@ def analyze_workbook(
     *,
     accept_recoveries: bool = False,
     prefer_punzados: bool = False,
-    confirmed_spf: dict[str, int] | None = None,
 ) -> ProcessingResult:
     stream = BytesIO(file_obj) if isinstance(file_obj, bytes) else file_obj
     try:
@@ -1185,7 +1158,6 @@ def analyze_workbook(
                 spf_conflicts = _spf_source_discrepancies(
                     configs, clusters, filename, config_sheet.title, cluster_sheet.title
                 )
-                decision_details.extend(conflict.detail for conflict in spf_conflicts)
 
         survey_source_warning = None
         try:
@@ -1206,28 +1178,11 @@ def analyze_workbook(
                 f"La hoja '{original_sheet_name}' tiene datos Survey incompletos. "
                 f"'{survey_sheet.title}' contiene {len(survey)} registros y coincide en MD y TVD."
             )
-        if spf_conflicts:
-            selections = confirmed_spf or {}
-            selected_by_stage: dict[int, int] = {}
-            for conflict in spf_conflicts:
-                selected = selections.get(conflict.key)
-                if selected is not None and selected not in {
-                    conflict.punzados_spf, conflict.input_spf
-                }:
-                    raise InvalidWorkbookError(
-                        f"{conflict.filename}, etapa {conflict.stage}: el SPF seleccionado "
-                        "no coincide con los valores de Punzados o Input."
-                    )
-                if not accept_recoveries or selected is None:
-                    raise ProcessingDecisionRequired(
-                        decision_details, spf_conflicts=spf_conflicts
-                    )
-                selected_by_stage[conflict.stage] = selected
-            configs, clusters = _apply_confirmed_spf(
-                configs, clusters, selected_by_stage
-            )
+        if spf_conflicts and not accept_recoveries:
+            raise ProcessingDecisionRequired(decision_details, spf_conflicts=spf_conflicts)
         stages, warnings, checks = _build_stages(
             clusters, configs, prefer_punzados=prefer_punzados,
+            allow_spf_discrepancy=bool(spf_conflicts and accept_recoveries),
         )
         if decision_details and not accept_recoveries:
             raise ProcessingDecisionRequired(decision_details)
@@ -1235,13 +1190,8 @@ def analyze_workbook(
             config_warnings = [detail.replace("Si continuás, se usarán", "Se usaron")
                                .replace("Si continuás, se usará", "Se usó")
                                for detail in config_warnings]
-            config_warnings.extend(
-                f"{conflict.filename}, etapa {conflict.stage}: SPF "
-                f"{selected_by_stage[conflict.stage]} confirmado por el usuario; "
-                f"Punzados indicaba {conflict.punzados_spf} e Input "
-                f"{conflict.input_spf}. El Excel cargado no se modificó."
-                for conflict in spf_conflicts
-            )
+            if spf_conflicts:
+                config_warnings.append(SPF_DISCREPANCY_REMINDER)
         warnings[:0] = config_warnings
         if survey_source_warning:
             warnings.insert(0, survey_source_warning)
@@ -1279,6 +1229,7 @@ def analyze_workbook(
             warnings=warnings,
             checks=checks,
             source_sheets=source_sheets,
+            spf_discrepancy=bool(spf_conflicts),
         )
     finally:
         workbook.close()
@@ -1448,6 +1399,31 @@ def _normalize_output_number_formats(sheet: Worksheet, result: ProcessingResult)
     _set_number_format(sheet, 4, 3 + result.wellbore_row_count, range(19, 21), "General")
 
 
+def _write_spf_summary(workbook: Workbook, result: ProcessingResult) -> None:
+    """Keep the unresolved SPF warning visible in the exported Excel."""
+    summary = workbook.create_sheet("Resumen")
+    summary["A1"] = "Resumen de procesamiento"
+    summary["A1"].font = Font(size=16, bold=True, color="B00000")
+    summary["A2"] = "Pozo"
+    summary["B2"] = result.well_name
+    summary["A3"] = "Etapas procesadas"
+    summary["B3"] = len(result.stages)
+    summary["A4"] = "Clústeres procesados"
+    summary["B4"] = len(result.clusters)
+    summary.merge_cells("A6:F9")
+    note = summary["A6"]
+    note.value = SPF_DISCREPANCY_REMINDER
+    note.font = Font(bold=True, color="9C0006")
+    note.fill = PatternFill(fill_type="solid", fgColor="FCE8E8")
+    note.alignment = Alignment(wrap_text=True, vertical="center")
+    summary.column_dimensions["A"].width = 24
+    summary.column_dimensions["B"].width = 30
+    for column in "CDEF":
+        summary.column_dimensions[column].width = 15
+    for row in range(6, 10):
+        summary.row_dimensions[row].height = 24
+
+
 def generate_finished_workbook(
     result: ProcessingResult,
     template_path: str | Path,
@@ -1508,6 +1484,8 @@ def generate_finished_workbook(
             wellbore_row += 1
 
     _normalize_output_number_formats(sheet, result)
+    if result.spf_discrepancy:
+        _write_spf_summary(workbook, result)
 
     # Ensure Excel recalculates any formulas that could exist in the template.
     try:
@@ -1540,13 +1518,11 @@ def process_uploaded_workbook(
     template_path: str | Path,
     *,
     accept_recoveries: bool = False,
-    confirmed_spf: dict[str, int] | None = None,
 ) -> GeneratedWorkbook:
     if Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise InvalidWorkbookError("LUCTIV solo acepta archivos Excel .xlsm o .xlsx.")
     result = analyze_workbook(
         file_bytes, filename, accept_recoveries=accept_recoveries,
-        confirmed_spf=confirmed_spf,
     )
     return generate_finished_workbook(result, template_path)
 
@@ -1595,6 +1571,8 @@ def _build_package_summary(
             f"pozo {result.well_name} | {len(result.stages)} etapas | "
             f"{len(result.clusters)} clusters | {len(result.survey)} registros Survey"
         )
+        if result.spf_discrepancy:
+            lines.append(f"  {SPF_DISCREPANCY_REMINDER}")
     failed_items = tuple(issue for issue in issue_items if issue.category == "error")
     ignored_items = tuple(issue for issue in issue_items if issue.category == "ignored")
     if failed_items:
@@ -1646,14 +1624,12 @@ def process_uploaded_package(
     template_path: str | Path,
     *,
     accept_recoveries: bool = False,
-    confirmed_spf: dict[str, int] | None = None,
 ) -> GeneratedWorkbook | GeneratedPackage:
     """Process either one workbook or every compatible workbook inside a ZIP package."""
     suffix = Path(filename).suffix.lower()
     if suffix in ALLOWED_EXTENSIONS:
         return process_uploaded_workbook(
             file_bytes, filename, template_path, accept_recoveries=accept_recoveries,
-            confirmed_spf=confirmed_spf,
         )
     if suffix != ".zip":
         raise InvalidWorkbookError(
@@ -1714,7 +1690,6 @@ def process_uploaded_package(
                     member_filename,
                     template_path,
                     accept_recoveries=accept_recoveries,
-                    confirmed_spf=confirmed_spf,
                 )
             except ProcessingDecisionRequired as exc:
                 decision_details.extend(
@@ -1734,7 +1709,7 @@ def process_uploaded_package(
     finally:
         source_archive.close()
 
-    if decision_details:
+    if decision_details or spf_conflicts:
         raise ProcessingDecisionRequired(decision_details, spf_conflicts=spf_conflicts)
 
     if not workbooks:

@@ -12,6 +12,7 @@ from processor import (
     InvalidWorkbookError,
     LuctivError,
     ProcessingDecisionRequired,
+    SPF_DISCREPANCY_NOTICE,
     process_uploaded_package,
 )
 from revision_processor import process_combined_revision, updated_plan_rows
@@ -668,15 +669,10 @@ if process_clicked:
 
 pending_decision = st.session_state.get("luctiv_pending_decision")
 accept_clicked = False
-selected_spf: dict[str, int] = {}
 if pending_decision and pending_decision["fingerprint"] == upload_fingerprint:
     spf_conflicts = pending_decision.get("spf_conflicts", ())
     if spf_conflicts:
-        st.warning(
-            "Hay una discrepancia de tiros por pie (SPF). Consultá al cliente "
-            "y seleccioná el valor confirmado para cada etapa antes de continuar.",
-            icon="⚠️",
-        )
+        st.warning(SPF_DISCREPANCY_NOTICE, icon="⚠️")
     else:
         st.warning(
             "Encontré diferencias entre las hojas. Revisá los datos antes de continuar:",
@@ -684,39 +680,19 @@ if pending_decision and pending_decision["fingerprint"] == upload_fingerprint:
         )
     for detail in pending_decision["details"]:
         st.write(f"• {detail}")
-    for conflict in spf_conflicts:
-        options = (None, conflict.punzados_spf, conflict.input_spf)
-        selected = st.selectbox(
-            f"{conflict.filename} · Etapa {conflict.stage}: SPF confirmado por el cliente",
-            options,
-            format_func=lambda value, item=conflict: (
-                "Seleccioná el SPF confirmado" if value is None
-                else f"{value} tiros/pie ({'Punzados' if value == item.punzados_spf else 'Input'})"
-            ),
-            key=f"luctiv_spf_{upload_fingerprint}_{conflict.key}",
+    cancel_col, accept_col = st.columns(2)
+    with cancel_col:
+        cancel_clicked = st.button(
+            "Cancelar" if spf_conflicts else "Cancelar y revisar el Excel",
+            use_container_width=True,
+            key="luctiv_cancel_recoveries",
         )
-        if selected is not None:
-            selected_spf[conflict.key] = selected
-    if spf_conflicts:
-        st.caption(
-            "La selección se aplicará al Excel terminado. El archivo cargado "
-            "permanecerá sin cambios."
-        )
-    accept_col, cancel_col = st.columns(2)
     with accept_col:
         accept_clicked = st.button(
-            "Continuar con el SPF seleccionado" if spf_conflicts
-            else "Usar los datos verificados y continuar",
+            "Continuar" if spf_conflicts else "Usar los datos verificados y continuar",
             type="primary",
             use_container_width=True,
             key="luctiv_accept_recoveries",
-            disabled=bool(spf_conflicts) and len(selected_spf) != len(spf_conflicts),
-        )
-    with cancel_col:
-        cancel_clicked = st.button(
-            "No continuar" if spf_conflicts else "Cancelar y revisar el Excel",
-            use_container_width=True,
-            key="luctiv_cancel_recoveries",
         )
     if cancel_clicked:
         st.session_state.pop("luctiv_pending_decision", None)
@@ -731,7 +707,6 @@ if (process_clicked or accept_clicked) and uploaded_file is not None:
                 filename=uploaded_file.name,
                 template_path=TEMPLATE_PATH,
                 accept_recoveries=accept_clicked,
-                confirmed_spf=selected_spf,
             )
     except ProcessingDecisionRequired as exc:
         st.session_state["luctiv_pending_decision"] = {
